@@ -103,6 +103,10 @@ class Settings:
     referral_reward: int = 5_000
     referral_new_user_reward: int = 2_000
     public_file_ttl_seconds: int = 3_600
+    tariff_standard_price: int = 25_000
+    tariff_premium_price: int = 50_000
+    tariff_standard_daily_limit: int = 15
+    tariff_period_days: int = 30
 
     @property
     def max_download_bytes(self) -> int:
@@ -174,6 +178,13 @@ class Settings:
             referral_reward=_as_int("REFERRAL_REWARD", 5_000),
             referral_new_user_reward=_as_int("REFERRAL_NEW_USER_REWARD", 2_000),
             public_file_ttl_seconds=_as_int("PUBLIC_FILE_TTL_SECONDS", 3_600),
+            tariff_standard_price=_as_int("TARIFF_STANDARD_PRICE", 25_000),
+            tariff_premium_price=_as_int("TARIFF_PREMIUM_PRICE", 50_000),
+            tariff_standard_daily_limit=_as_int(
+                "TARIFF_STANDARD_DAILY_LIMIT",
+                15,
+            ),
+            tariff_period_days=_as_int("TARIFF_PERIOD_DAYS", 30),
         )
         if settings.circle_price < 0 or settings.initial_balance < 0:
             raise ValueError("Balans va narx manfiy bo'lishi mumkin emas")
@@ -189,6 +200,10 @@ class Settings:
             or settings.daily_free_limit <= 0
             or settings.premium_stars <= 0
             or settings.public_file_ttl_seconds <= 0
+            or settings.tariff_standard_price <= 0
+            or settings.tariff_premium_price <= 0
+            or settings.tariff_standard_daily_limit <= 0
+            or settings.tariff_period_days <= 0
         ):
             raise ValueError("Limit va Premium sozlamalari musbat bo'lishi kerak")
         if settings.bot_api_local and not settings.bot_api_base:

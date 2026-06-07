@@ -128,6 +128,29 @@ CREATE TABLE IF NOT EXISTS subscription_payments (
     FOREIGN KEY (user_id) REFERENCES users(user_id)
 );
 
+CREATE TABLE IF NOT EXISTS tariff_memberships (
+    user_id INTEGER PRIMARY KEY,
+    plan_code TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    free_claimed INTEGER NOT NULL DEFAULT 0 CHECK (free_claimed IN (0, 1)),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(user_id)
+);
+
+CREATE TABLE IF NOT EXISTS tariff_purchases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    plan_code TEXT NOT NULL,
+    price INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tariff_purchases_user_id
+ON tariff_purchases(user_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS referrals (
     invitee_id INTEGER PRIMARY KEY,
     inviter_id INTEGER NOT NULL,
@@ -253,6 +276,21 @@ class DownloadRecord:
     status: str
     telegram_file_id: str | None
     created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class TariffMembership:
+    plan_code: str
+    expires_at: int
+    source: str = "balance"
+
+
+@dataclass(frozen=True, slots=True)
+class TariffPurchaseResult:
+    success: bool
+    reason: str
+    balance: int
+    expires_at: int | None = None
 
 
 class Database:
@@ -790,6 +828,7 @@ class Database:
             )
 
     async def is_premium(self, user_id: int) -> bool:
+        now = int(time.time())
         with self._connect() as db:
             row = db.execute(
                 """
@@ -799,15 +838,269 @@ class Database:
                 """,
                 (user_id,),
             ).fetchone()
-            return bool(row and int(row[0]) > int(time.time()))
+            if row and int(row[0]) > now:
+                return True
+            tariff = db.execute(
+                """
+                SELECT expires_at
+                FROM tariff_memberships
+                WHERE user_id = ? AND plan_code = 'premium'
+                """,
+                (user_id,),
+            ).fetchone()
+            return bool(tariff and int(tariff[0]) > now)
 
     async def premium_until(self, user_id: int) -> int | None:
         with self._connect() as db:
-            row = db.execute(
+            subscription = db.execute(
                 "SELECT expires_at FROM subscriptions WHERE user_id = ?",
                 (user_id,),
             ).fetchone()
-            return int(row[0]) if row else None
+            tariff = db.execute(
+                """
+                SELECT expires_at FROM tariff_memberships
+                WHERE user_id = ? AND plan_code = 'premium'
+                """,
+                (user_id,),
+            ).fetchone()
+            values = [
+                int(row[0])
+                for row in (subscription, tariff)
+                if row is not None
+            ]
+            return max(values) if values else None
+
+    async def get_active_tariff(self, user_id: int) -> TariffMembership | None:
+        now = int(time.time())
+        with self._connect() as db:
+            subscription = db.execute(
+                """
+                SELECT expires_at
+                FROM subscriptions
+                WHERE user_id = ? AND status = 'active' AND expires_at > ?
+                """,
+                (user_id, now),
+            ).fetchone()
+            row = db.execute(
+                """
+                SELECT plan_code, expires_at
+                FROM tariff_memberships
+                WHERE user_id = ? AND expires_at > ?
+                """,
+                (user_id, now),
+            ).fetchone()
+            if subscription:
+                if (
+                    row
+                    and str(row[0]) == "premium"
+                    and int(row[1]) >= int(subscription[0])
+                ):
+                    return TariffMembership("premium", int(row[1]))
+                return TariffMembership(
+                    "premium",
+                    int(subscription[0]),
+                    source="stars",
+                )
+            if row:
+                return TariffMembership(str(row[0]), int(row[1]))
+            return None
+
+    async def activate_free_tariff(
+        self,
+        user_id: int,
+        *,
+        period_seconds: int,
+    ) -> TariffPurchaseResult:
+        if period_seconds <= 0:
+            raise ValueError("Tarif muddati musbat bo'lishi kerak")
+        now = int(time.time())
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "INSERT OR IGNORE INTO users (user_id, balance) VALUES (?, 0)",
+                (user_id,),
+            )
+            balance_row = db.execute(
+                "SELECT balance FROM users WHERE user_id = ?"
+                + (" FOR UPDATE" if self.postgres else ""),
+                (user_id,),
+            ).fetchone()
+            balance = int(balance_row[0]) if balance_row else 0
+            row = db.execute(
+                "SELECT plan_code, expires_at, free_claimed "
+                "FROM tariff_memberships WHERE user_id = ?"
+                + (" FOR UPDATE" if self.postgres else ""),
+                (user_id,),
+            ).fetchone()
+            subscription = db.execute(
+                """
+                SELECT expires_at FROM subscriptions
+                WHERE user_id = ? AND status = 'active' AND expires_at > ?
+                """,
+                (user_id, now),
+            ).fetchone()
+            if subscription:
+                return TariffPurchaseResult(
+                    False,
+                    "active",
+                    balance,
+                    int(subscription[0]),
+                )
+            if row and int(row[1]) > now:
+                return TariffPurchaseResult(
+                    False,
+                    "active",
+                    balance,
+                    int(row[1]),
+                )
+            if row and int(row[2]) == 1:
+                return TariffPurchaseResult(False, "free_used", balance)
+            expires_at = now + period_seconds
+            db.execute(
+                """
+                INSERT INTO tariff_memberships
+                    (user_id, plan_code, expires_at, free_claimed)
+                VALUES (?, 'free', ?, 1)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    plan_code = 'free',
+                    expires_at = excluded.expires_at,
+                    free_claimed = 1,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (user_id, expires_at),
+            )
+            return TariffPurchaseResult(True, "activated", balance, expires_at)
+
+    async def purchase_tariff(
+        self,
+        user_id: int,
+        *,
+        plan_code: str,
+        price: int,
+        period_seconds: int,
+    ) -> TariffPurchaseResult:
+        if plan_code not in {"standard", "premium"}:
+            raise ValueError("Pullik tarif noto'g'ri")
+        if price <= 0 or period_seconds <= 0:
+            raise ValueError("Tarif narxi va muddati musbat bo'lishi kerak")
+        now = int(time.time())
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "INSERT OR IGNORE INTO users (user_id, balance) VALUES (?, 0)",
+                (user_id,),
+            )
+            balance_row = db.execute(
+                "SELECT balance FROM users WHERE user_id = ?"
+                + (" FOR UPDATE" if self.postgres else ""),
+                (user_id,),
+            ).fetchone()
+            balance = int(balance_row[0]) if balance_row else 0
+            membership = db.execute(
+                "SELECT plan_code, expires_at FROM tariff_memberships "
+                "WHERE user_id = ?"
+                + (" FOR UPDATE" if self.postgres else ""),
+                (user_id,),
+            ).fetchone()
+            subscription = db.execute(
+                """
+                SELECT expires_at FROM subscriptions
+                WHERE user_id = ? AND status = 'active' AND expires_at > ?
+                """,
+                (user_id, now),
+            ).fetchone()
+            if subscription:
+                return TariffPurchaseResult(
+                    False,
+                    "already_active",
+                    balance,
+                    int(subscription[0]),
+                )
+            if (
+                membership
+                and str(membership[0]) == plan_code
+                and int(membership[1]) > now
+            ):
+                return TariffPurchaseResult(
+                    False,
+                    "already_active",
+                    balance,
+                    int(membership[1]),
+                )
+            plan_rank = {"free": 0, "standard": 1, "premium": 2}
+            if (
+                membership
+                and int(membership[1]) > now
+                and plan_rank.get(str(membership[0]), 0) > plan_rank[plan_code]
+            ):
+                return TariffPurchaseResult(
+                    False,
+                    "higher_active",
+                    balance,
+                    int(membership[1]),
+                )
+            if balance < price:
+                return TariffPurchaseResult(False, "insufficient", balance)
+            current_expiry = int(membership[1]) if membership else 0
+            expires_at = max(now, current_expiry) + period_seconds
+            new_balance = balance - price
+            db.execute(
+                """
+                UPDATE users
+                SET balance = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = ?
+                """,
+                (new_balance, user_id),
+            )
+            db.execute(
+                """
+                INSERT INTO transactions (user_id, amount, kind, description)
+                VALUES (?, ?, 'tariff', ?)
+                """,
+                (user_id, -price, f"{plan_code.title()} tarif"),
+            )
+            db.execute(
+                """
+                INSERT INTO tariff_memberships
+                    (user_id, plan_code, expires_at, free_claimed)
+                VALUES (?, ?, ?, 0)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    plan_code = excluded.plan_code,
+                    expires_at = excluded.expires_at,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (user_id, plan_code, expires_at),
+            )
+            db.execute(
+                """
+                INSERT INTO tariff_purchases
+                    (user_id, plan_code, price, expires_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (user_id, plan_code, price, expires_at),
+            )
+            return TariffPurchaseResult(
+                True,
+                "purchased",
+                new_balance,
+                expires_at,
+            )
+
+    async def tariff_daily_limit(
+        self,
+        user_id: int,
+        *,
+        free_limit: int,
+        standard_limit: int,
+    ) -> int:
+        tariff = await self.get_active_tariff(user_id)
+        if not tariff:
+            return 0
+        if tariff.plan_code == "premium":
+            return -1
+        if tariff.plan_code == "standard":
+            return standard_limit
+        return free_limit
 
     async def activate_premium(
         self,
@@ -1217,8 +1510,13 @@ class Database:
                 ),
                 "errors": "SELECT COUNT(*) FROM error_logs",
                 "premium": (
-                    "SELECT COUNT(*) FROM subscriptions "
-                    f"WHERE status = 'active' AND expires_at > {now}"
+                    "SELECT COUNT(*) FROM ("
+                    "SELECT user_id FROM subscriptions "
+                    f"WHERE status = 'active' AND expires_at > {now} "
+                    "UNION "
+                    "SELECT user_id FROM tariff_memberships "
+                    f"WHERE plan_code = 'premium' AND expires_at > {now}"
+                    ") AS active_premium"
                 ),
                 "today_downloads": (
                     "SELECT COALESCE(SUM(count), 0) FROM daily_usage "

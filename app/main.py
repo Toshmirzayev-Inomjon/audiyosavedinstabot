@@ -26,6 +26,7 @@ async def configure_bot_profile(bot: Bot, webapp_public_url: str | None) -> None
         [
             BotCommand(command="start", description="Botni ochish va xizmatlarni ko'rish"),
             BotCommand(command="help", description="Botdan foydalanish bo'yicha yordam"),
+            BotCommand(command="tarif", description="Tarifni ko'rish yoki almashtirish"),
             BotCommand(command="balance", description="Balans va oxirgi amallar"),
             BotCommand(command="buy", description="Telegram Stars orqali hisob to'ldirish"),
             BotCommand(command="cancel", description="Joriy amalni bekor qilish"),

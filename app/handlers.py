@@ -24,6 +24,7 @@ from aiogram.types import (
     LabeledPrice,
     Message,
     PreCheckoutQuery,
+    ReplyKeyboardRemove,
 )
 
 from app.config import Settings
@@ -39,6 +40,8 @@ from app.keyboards import (
     main_keyboard,
     quality_keyboard,
     star_packages_keyboard,
+    tariff_confirm_keyboard,
+    tariff_keyboard,
 )
 from app.services.downloader import (
     DownloadCancelled,
@@ -64,6 +67,7 @@ BALANCE_LABELS = {labels["balance"] for labels in MENU_LABELS.values()}
 BUY_LABELS = {labels["buy"] for labels in MENU_LABELS.values()}
 HISTORY_LABELS = {labels["history"] for labels in MENU_LABELS.values()}
 PREMIUM_LABELS = {labels["premium"] for labels in MENU_LABELS.values()}
+TARIFF_LABELS = {labels["tariff"] for labels in MENU_LABELS.values()}
 LANGUAGE_LABELS = {labels["language"] for labels in MENU_LABELS.values()}
 
 
@@ -93,6 +97,71 @@ def format_money(amount: int) -> str:
 
 def custom_credits(stars: int, settings: Settings) -> int:
     return stars * settings.star_credit_rate
+
+
+def _tariff_period_seconds(settings: Settings) -> int:
+    return settings.tariff_period_days * 24 * 60 * 60
+
+
+def _tariff_name(plan_code: str) -> str:
+    return {
+        "free": "Bepul",
+        "standard": "Standard",
+        "premium": "Premium",
+    }.get(plan_code, plan_code.title())
+
+
+def _tariff_price(plan_code: str, settings: Settings) -> int:
+    return {
+        "standard": settings.tariff_standard_price,
+        "premium": settings.tariff_premium_price,
+    }[plan_code]
+
+
+def _tariff_catalog_text(settings: Settings) -> str:
+    return (
+        "📋 <b>Tarifni tanlang</b>\n\n"
+        f"🆓 <b>Bepul</b> — {settings.tariff_period_days} kun\n"
+        f"Kuniga {settings.daily_free_limit} ta yuklash, 720p gacha.\n\n"
+        f"⚡ <b>Standard</b> — "
+        f"{format_money(settings.tariff_standard_price)} / "
+        f"{settings.tariff_period_days} kun\n"
+        f"Kuniga {settings.tariff_standard_daily_limit} ta yuklash, "
+        "720p gacha.\n\n"
+        f"💎 <b>Premium</b> — "
+        f"{format_money(settings.tariff_premium_price)} / "
+        f"{settings.tariff_period_days} kun\n"
+        "Limitsiz yuklash va 1080p.\n\n"
+        "Pullik tarif narxi botdagi ichki balansdan yechiladi."
+    )
+
+
+def _tariff_markup(settings: Settings) -> InlineKeyboardMarkup:
+    return tariff_keyboard(
+        settings.tariff_standard_price,
+        settings.tariff_premium_price,
+        settings.tariff_period_days,
+    )
+
+
+async def _require_active_tariff(
+    message: Message,
+    database: Database,
+    settings: Settings,
+) -> bool:
+    if not message.from_user:
+        return False
+    if await database.get_active_tariff(message.from_user.id):
+        return True
+    await message.answer(
+        "Tarifingiz faol emas. Xizmatlardan foydalanish uchun tarif tanlang.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    await message.answer(
+        _tariff_catalog_text(settings),
+        reply_markup=_tariff_markup(settings),
+    )
+    return False
 
 
 def parse_payment_payload(
@@ -348,10 +417,41 @@ def build_router(services: Services) -> Router:
             if message.from_user
             else "uz"
         )
+        tariff = (
+            await database.get_active_tariff(message.from_user.id)
+            if message.from_user
+            else None
+        )
+        if not tariff:
+            await message.answer(
+                i18n_text(language, "welcome"),
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            await message.answer(
+                _tariff_catalog_text(settings),
+                reply_markup=_tariff_markup(settings),
+            )
+            return
+        tariff_expiry = datetime.fromtimestamp(
+            tariff.expires_at,
+            UTC,
+        ).strftime("%Y-%m-%d")
+        daily_limit = await database.tariff_daily_limit(
+            message.from_user.id,
+            free_limit=settings.daily_free_limit,
+            standard_limit=settings.tariff_standard_daily_limit,
+        )
+        daily_text = (
+            "♾ Kunlik yuklash: <b>limitsiz</b>"
+            if daily_limit < 0
+            else f"🎁 Kunlik yuklash: <b>{daily_limit} ta</b>"
+        )
         await message.answer(
             i18n_text(language, "welcome")
             + "\n\n"
-            f"🎁 Kunlik bepul limit: <b>{settings.daily_free_limit} ta</b>\n"
+            f"📋 Tarif: <b>{_tariff_name(tariff.plan_code)}</b> "
+            f"({tariff_expiry} gacha)\n"
+            f"{daily_text}\n"
             f"⭕ Aylana video narxi: <b>{format_money(settings.circle_price)}</b>\n\n"
             f"⏱ Maksimal davomiylik: <b>{settings.max_duration_minutes // 60} soat</b>\n"
             f"📦 Media limiti: <b>{settings.max_download_mb} MB gacha</b>",
@@ -415,6 +515,144 @@ def build_router(services: Services) -> Router:
             f"Minimal custom to'lov: {settings.custom_star_min} Stars.",
             reply_markup=star_packages_keyboard(settings.star_packages),
         )
+
+    @router.message(F.text.in_(TARIFF_LABELS | {"Tariflar"}))
+    @router.message(Command("tarif"))
+    async def tariff_handler(message: Message) -> None:
+        await ensure_user(message, database)
+        if not message.from_user:
+            return
+        tariff = await database.get_active_tariff(message.from_user.id)
+        status = "Faol tarif yo'q."
+        if tariff:
+            expiry = datetime.fromtimestamp(
+                tariff.expires_at,
+                UTC,
+            ).strftime("%Y-%m-%d")
+            status = (
+                f"Joriy tarif: <b>{_tariff_name(tariff.plan_code)}</b>\n"
+                f"Amal qilish muddati: <b>{expiry}</b>"
+            )
+        await message.answer(
+            f"{status}\n\n{_tariff_catalog_text(settings)}",
+            reply_markup=_tariff_markup(settings),
+        )
+
+    @router.callback_query(F.data.startswith("tariff:"))
+    async def tariff_callback(callback: CallbackQuery) -> None:
+        if not callback.data:
+            return
+        await database.ensure_user(
+            callback.from_user.id,
+            callback.from_user.username,
+            callback.from_user.full_name,
+        )
+        plan_code = callback.data.split(":", maxsplit=1)[1]
+        if plan_code == "list":
+            await callback.message.answer(
+                _tariff_catalog_text(settings),
+                reply_markup=_tariff_markup(settings),
+            )
+            await callback.answer()
+            return
+        if plan_code == "free":
+            result = await database.activate_free_tariff(
+                callback.from_user.id,
+                period_seconds=_tariff_period_seconds(settings),
+            )
+            if result.success and result.expires_at:
+                expiry = datetime.fromtimestamp(
+                    result.expires_at,
+                    UTC,
+                ).strftime("%Y-%m-%d")
+                await callback.message.answer(
+                    "🆓 Bepul tarif faollashtirildi.\n"
+                    f"Amal qilish muddati: <b>{expiry}</b>",
+                    reply_markup=main_keyboard(
+                        await database.get_language(callback.from_user.id)
+                    ),
+                )
+            elif result.reason == "free_used":
+                await callback.message.answer(
+                    "Bepul tarifdan oldin foydalanilgansiz. "
+                    "Standard yoki Premium tarifni tanlang.",
+                    reply_markup=_tariff_markup(settings),
+                )
+            else:
+                await callback.message.answer(
+                    "Sizda hozir faol tarif mavjud. /tarif orqali holatini ko'ring.",
+                    reply_markup=main_keyboard(
+                        await database.get_language(callback.from_user.id)
+                    ),
+                )
+            await callback.answer()
+            return
+        if plan_code not in {"standard", "premium"}:
+            await callback.answer("Tarif noto'g'ri", show_alert=True)
+            return
+        balance = await database.get_balance(callback.from_user.id)
+        price = _tariff_price(plan_code, settings)
+        await callback.message.answer(
+            f"{_tariff_name(plan_code)} tarif: "
+            f"<b>{format_money(price)}</b>\n"
+            f"Muddat: <b>{settings.tariff_period_days} kun</b>\n"
+            f"Balansingiz: <b>{format_money(balance)}</b>\n\n"
+            "Xaridni tasdiqlaysizmi?",
+            reply_markup=tariff_confirm_keyboard(plan_code),
+        )
+        await callback.answer()
+
+    @router.callback_query(F.data.startswith("tariff_buy:"))
+    async def tariff_buy_callback(callback: CallbackQuery) -> None:
+        if not callback.data:
+            return
+        plan_code = callback.data.split(":", maxsplit=1)[1]
+        if plan_code not in {"standard", "premium"}:
+            await callback.answer("Tarif noto'g'ri", show_alert=True)
+            return
+        result = await database.purchase_tariff(
+            callback.from_user.id,
+            plan_code=plan_code,
+            price=_tariff_price(plan_code, settings),
+            period_seconds=_tariff_period_seconds(settings),
+        )
+        if result.success and result.expires_at:
+            expiry = datetime.fromtimestamp(
+                result.expires_at,
+                UTC,
+            ).strftime("%Y-%m-%d")
+            await callback.message.answer(
+                f"✅ {_tariff_name(plan_code)} tarif sotib olindi.\n"
+                f"Amal qilish muddati: <b>{expiry}</b>\n"
+                f"Qolgan balans: <b>{format_money(result.balance)}</b>",
+                reply_markup=main_keyboard(
+                    await database.get_language(callback.from_user.id)
+                ),
+            )
+        elif result.reason == "insufficient":
+            await callback.message.answer(
+                "Balans yetarli emas.\n"
+                f"Balans: <b>{format_money(result.balance)}</b>\n"
+                f"Kerak: <b>{format_money(_tariff_price(plan_code, settings))}</b>\n\n"
+                "Avval hisobni Telegram Stars orqali to'ldiring.",
+                reply_markup=star_packages_keyboard(settings.star_packages),
+            )
+        elif result.reason == "higher_active":
+            await callback.message.answer(
+                "Sizda bundan yuqori tarif faol. Past tarifga o'tishda "
+                "balansdan pul yechilmadi.",
+                reply_markup=main_keyboard(
+                    await database.get_language(callback.from_user.id)
+                ),
+            )
+        else:
+            await callback.message.answer(
+                "Bu tarif hozir faol. Takroriy bosish uchun pul yechilmadi.",
+                reply_markup=main_keyboard(
+                    await database.get_language(callback.from_user.id)
+                ),
+            )
+        await callback.answer()
 
     @router.message(F.text.in_(LANGUAGE_LABELS | {"Til / Language"}))
     @router.message(Command("language"))
@@ -738,6 +976,9 @@ def build_router(services: Services) -> Router:
     @router.message(F.text.in_(VIDEO_LABELS | {"Video yuklash"}))
     async def choose_video(message: Message, state: FSMContext) -> None:
         await ensure_user(message, database)
+        if not await _require_active_tariff(message, database, settings):
+            await state.clear()
+            return
         await state.set_state(MediaStates.video_quality)
         await message.answer(
             "📥 <b>Video sifatini tanlang</b>\n\n"
@@ -749,6 +990,13 @@ def build_router(services: Services) -> Router:
     @router.callback_query(MediaStates.video_quality, F.data.startswith("quality:"))
     async def quality_callback(callback: CallbackQuery, state: FSMContext) -> None:
         if not callback.data:
+            return
+        if not await database.get_active_tariff(callback.from_user.id):
+            await state.clear()
+            await callback.answer(
+                "Tarif faol emas. /tarif orqali tarif tanlang.",
+                show_alert=True,
+            )
             return
         quality = callback.data.split(":", maxsplit=1)[1]
         if quality not in {"360", "720", "1080", "audio"}:
@@ -775,6 +1023,9 @@ def build_router(services: Services) -> Router:
     @router.message(F.text.in_(MP3_LABELS | {"MP3 yuklash"}))
     async def choose_mp3(message: Message, state: FSMContext) -> None:
         await ensure_user(message, database)
+        if not await _require_active_tariff(message, database, settings):
+            await state.clear()
+            return
         await state.set_state(MediaStates.mp3_download)
         await message.answer(
             "🎵 <b>MP3 tayyorlash</b>\n\n"
@@ -787,6 +1038,8 @@ def build_router(services: Services) -> Router:
     async def history_handler(message: Message) -> None:
         await ensure_user(message, database)
         if not message.from_user:
+            return
+        if not await _require_active_tariff(message, database, settings):
             return
         items = await database.recent_downloads(message.from_user.id, 10)
         available = [
@@ -804,6 +1057,12 @@ def build_router(services: Services) -> Router:
 
     @router.callback_query(F.data.startswith("history:"))
     async def history_callback(callback: CallbackQuery) -> None:
+        if not await database.get_active_tariff(callback.from_user.id):
+            await callback.answer(
+                "Tarif faol emas. /tarif orqali tarif tanlang.",
+                show_alert=True,
+            )
+            return
         try:
             download_id = int((callback.data or "").split(":", maxsplit=1)[1])
         except (IndexError, ValueError):
@@ -829,6 +1088,9 @@ def build_router(services: Services) -> Router:
     @router.message(F.text.in_(CIRCLE_LABELS | {"Aylana video qilish"}))
     async def choose_circle(message: Message, state: FSMContext) -> None:
         await ensure_user(message, database)
+        if not await _require_active_tariff(message, database, settings):
+            await state.clear()
+            return
         await state.set_state(MediaStates.circle)
         await message.answer(
             "⭕ <b>Aylana video tayyorlash</b>\n\n"
@@ -842,6 +1104,9 @@ def build_router(services: Services) -> Router:
     )
     async def choose_rectangle(message: Message, state: FSMContext) -> None:
         await ensure_user(message, database)
+        if not await _require_active_tariff(message, database, settings):
+            await state.clear()
+            return
         await state.set_state(MediaStates.rectangle)
         await message.answer(
             "🖼 <b>Aylanani oddiy video qilish</b>\n\n"
@@ -859,9 +1124,17 @@ def build_router(services: Services) -> Router:
         await ensure_user(message, database)
         if not message.from_user:
             return
+        if not await _require_active_tariff(message, database, settings):
+            await state.clear()
+            return
+        daily_limit = await database.tariff_daily_limit(
+            message.from_user.id,
+            free_limit=settings.daily_free_limit,
+            standard_limit=settings.tariff_standard_daily_limit,
+        )
         allowed, remaining = await database.reserve_daily_use(
             message.from_user.id,
-            settings.daily_free_limit,
+            daily_limit,
         )
         if not allowed:
             await state.clear()
@@ -973,9 +1246,17 @@ def build_router(services: Services) -> Router:
         await ensure_user(message, database)
         if not message.from_user:
             return
+        if not await _require_active_tariff(message, database, settings):
+            await state.clear()
+            return
+        daily_limit = await database.tariff_daily_limit(
+            message.from_user.id,
+            free_limit=settings.daily_free_limit,
+            standard_limit=settings.tariff_standard_daily_limit,
+        )
         allowed, remaining = await database.reserve_daily_use(
             message.from_user.id,
-            settings.daily_free_limit,
+            daily_limit,
         )
         if not allowed:
             await state.clear()
@@ -1093,6 +1374,9 @@ def build_router(services: Services) -> Router:
         await ensure_user(message, database)
         if not message.from_user:
             return
+        if not await _require_active_tariff(message, database, settings):
+            await state.clear()
+            return
         charged = await database.charge(
             message.from_user.id,
             settings.circle_price,
@@ -1160,6 +1444,10 @@ def build_router(services: Services) -> Router:
         state: FSMContext,
         bot: Bot,
     ) -> None:
+        await ensure_user(message, database)
+        if not await _require_active_tariff(message, database, settings):
+            await state.clear()
+            return
         status = await message.answer("To'rtburchak video tayyorlanmoqda...")
         try:
             with tempfile.TemporaryDirectory(
@@ -1214,6 +1502,8 @@ def build_router(services: Services) -> Router:
     @router.message()
     async def fallback_handler(message: Message) -> None:
         await ensure_user(message, database)
+        if not await _require_active_tariff(message, database, settings):
+            return
         await message.answer(
             "Quyidagi tugmalardan kerakli xizmatni tanlang. "
             "Bot nima qilishini ko'rish uchun /help ni bosing.",

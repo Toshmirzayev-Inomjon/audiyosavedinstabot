@@ -158,6 +158,7 @@ async def me_handler(request: web.Request) -> web.Response:
     balance = await database.get_balance(user_id)
     downloads = await database.recent_downloads(user_id, 15)
     premium_until = await database.premium_until(user_id)
+    tariff = await database.get_active_tariff(user_id)
     referral_count, referral_earned = await database.referral_stats(user_id)
     language = await database.get_language(user_id)
     settings: Settings = request.app["settings"]
@@ -185,6 +186,15 @@ async def me_handler(request: web.Request) -> web.Response:
                 for item in downloads
             ],
             "premium_until": premium_until,
+            "tariff": (
+                {
+                    "plan_code": tariff.plan_code,
+                    "expires_at": tariff.expires_at,
+                    "source": tariff.source,
+                }
+                if tariff
+                else None
+            ),
             "language": language,
             "is_admin": user_id in settings.admin_ids,
             "referral": {
@@ -343,11 +353,21 @@ async def create_download_handler(request: web.Request) -> web.Response:
         raise web.HTTPBadRequest(text=str(exc)) from exc
     database: Database = request.app["database"]
     settings: Settings = request.app["settings"]
+    tariff = await database.get_active_tariff(user_id)
+    if not tariff:
+        raise web.HTTPPaymentRequired(
+            text="Tarif faol emas. Botda /tarif orqali tarif tanlang."
+        )
     if quality == "1080" and not await database.is_premium(user_id):
         raise web.HTTPPaymentRequired(text="1080p uchun Premium kerak")
+    daily_limit = await database.tariff_daily_limit(
+        user_id,
+        free_limit=settings.daily_free_limit,
+        standard_limit=settings.tariff_standard_daily_limit,
+    )
     allowed, remaining = await database.reserve_daily_use(
         user_id,
-        settings.daily_free_limit,
+        daily_limit,
     )
     if not allowed:
         raise web.HTTPTooManyRequests(text="Bugungi bepul limit tugagan")
@@ -1348,11 +1368,11 @@ WEBAPP_HTML = """<!doctype html>
         document.getElementById("account_stat").textContent = (data.accounts || []).length + " ta";
         document.getElementById("language_select").value = data.language || "uz";
         applyLanguage(data.language || "uz");
-        const premiumActive = data.premium_until && data.premium_until * 1000 > Date.now();
-        document.getElementById("premium_status").textContent =
-          premiumActive
-            ? "Premium faol · " + new Date(data.premium_until * 1000).toLocaleDateString()
-            : "Standart tarif";
+        const tariffNames = {free: "Bepul", standard: "Standard", premium: "Premium"};
+        document.getElementById("premium_status").textContent = data.tariff
+          ? (tariffNames[data.tariff.plan_code] || data.tariff.plan_code) +
+            " tarif · " + new Date(data.tariff.expires_at * 1000).toLocaleDateString()
+          : "Tarif faol emas · botda /tarif ni bosing";
         document.getElementById("referral_status").textContent =
           "Takliflar: " + (data.referral?.count || 0) +
           " · Bonus: " + money(data.referral?.earned || 0);

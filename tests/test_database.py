@@ -116,6 +116,86 @@ async def test_pending_star_payment_confirm_adds_balance_once(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_free_and_paid_tariffs_are_persistent_and_idempotent(
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "test.sqlite3", initial_balance=75_000)
+    await database.initialize()
+    await database.ensure_user(10, "user", "Test User")
+
+    free = await database.activate_free_tariff(10, period_seconds=2_592_000)
+    assert free.success is True
+    assert free.expires_at is not None
+    active = await database.get_active_tariff(10)
+    assert active is not None
+    assert active.plan_code == "free"
+    assert await database.tariff_daily_limit(
+        10,
+        free_limit=3,
+        standard_limit=15,
+    ) == 3
+
+    second_free = await database.activate_free_tariff(10, period_seconds=2_592_000)
+    assert second_free.success is False
+    assert second_free.reason == "active"
+
+    standard = await database.purchase_tariff(
+        10,
+        plan_code="standard",
+        price=25_000,
+        period_seconds=2_592_000,
+    )
+    assert standard.success is True
+    assert standard.balance == 50_000
+    assert await database.tariff_daily_limit(
+        10,
+        free_limit=3,
+        standard_limit=15,
+    ) == 15
+
+    duplicate = await database.purchase_tariff(
+        10,
+        plan_code="standard",
+        price=25_000,
+        period_seconds=2_592_000,
+    )
+    assert duplicate.success is False
+    assert duplicate.reason == "already_active"
+    assert duplicate.balance == 50_000
+
+    premium = await database.purchase_tariff(
+        10,
+        plan_code="premium",
+        price=50_000,
+        period_seconds=2_592_000,
+    )
+    assert premium.success is True
+    assert premium.balance == 0
+    assert await database.is_premium(10)
+    assert await database.tariff_daily_limit(
+        10,
+        free_limit=3,
+        standard_limit=15,
+    ) == -1
+    downgrade = await database.purchase_tariff(
+        10,
+        plan_code="standard",
+        price=25_000,
+        period_seconds=2_592_000,
+    )
+    assert downgrade.success is False
+    assert downgrade.reason == "higher_active"
+    assert downgrade.balance == 0
+
+    reopened = Database(tmp_path / "test.sqlite3")
+    await reopened.initialize()
+    persisted = await reopened.get_active_tariff(10)
+    assert persisted is not None
+    assert persisted.plan_code == "premium"
+    assert await reopened.get_balance(10) == 0
+
+
+@pytest.mark.asyncio
 async def test_referral_promo_premium_limit_and_history(tmp_path: Path) -> None:
     database = Database(tmp_path / "test.sqlite3")
     await database.initialize()

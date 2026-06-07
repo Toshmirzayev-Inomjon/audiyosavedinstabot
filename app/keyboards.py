@@ -15,6 +15,7 @@ CANCEL_BUTTON = "❌ Bekor qilish"
 CUSTOM_STARS_BUTTON = "✍️ O'zim kiritaman"
 HISTORY_BUTTON = "🕘 Yuklash tarixi"
 PREMIUM_BUTTON = "💎 Premium"
+TARIFF_BUTTON = "📋 Tariflar"
 LANGUAGE_BUTTON = "🌐 Til / Language"
 
 MENU_LABELS = {
@@ -27,6 +28,7 @@ MENU_LABELS = {
         "buy": BUY_BUTTON,
         "history": HISTORY_BUTTON,
         "premium": PREMIUM_BUTTON,
+        "tariff": TARIFF_BUTTON,
         "language": LANGUAGE_BUTTON,
         "placeholder": "Quyidagi xizmatlardan birini tanlang",
     },
@@ -39,6 +41,7 @@ MENU_LABELS = {
         "buy": "⭐ Пополнить баланс",
         "history": "🕘 История загрузок",
         "premium": "💎 Премиум",
+        "tariff": "📋 Тарифы",
         "language": LANGUAGE_BUTTON,
         "placeholder": "Выберите услугу",
     },
@@ -51,6 +54,7 @@ MENU_LABELS = {
         "buy": "⭐ Add balance",
         "history": "🕘 Download history",
         "premium": "💎 Premium",
+        "tariff": "📋 Plans",
         "language": LANGUAGE_BUTTON,
         "placeholder": "Choose a service",
     },
@@ -67,12 +71,60 @@ def main_keyboard(language: str = "uz") -> ReplyKeyboardMarkup:
             [KeyboardButton(text=labels["balance"]), KeyboardButton(text=labels["buy"])],
             [
                 KeyboardButton(text=labels["history"]),
-                KeyboardButton(text=labels["premium"]),
+                KeyboardButton(text=labels["tariff"]),
             ],
             [KeyboardButton(text=labels["language"])],
         ],
         resize_keyboard=True,
         input_field_placeholder=labels["placeholder"],
+    )
+
+
+def tariff_keyboard(
+    standard_price: int,
+    premium_price: int,
+    period_days: int = 30,
+) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"🆓 Bepul — {period_days} kun",
+                    callback_data="tariff:free",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"⚡ Standard — {standard_price:,} so'm",
+                    callback_data="tariff:standard",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"💎 Premium — {premium_price:,} so'm",
+                    callback_data="tariff:premium",
+                )
+            ],
+        ]
+    )
+
+
+def tariff_confirm_keyboard(plan_code: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Balansdan sotib olish",
+                    callback_data=f"tariff_buy:{plan_code}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Tariflarga qaytish",
+                    callback_data="tariff:list",
+                )
+            ],
+        ]
     )
 
 

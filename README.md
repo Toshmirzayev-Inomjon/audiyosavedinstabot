@@ -11,6 +11,8 @@ Bot quyidagilarni bajaradi:
 - PostgreSQL/SQLite balans, tranzaksiya tarixi, haq yechish va xatoda refund
 - Telegram Stars orqali balans to'ldirish
 - Telegram Stars orqali 30 kunlik avtomatik Premium obuna
+- `/start` va `/tarif` orqali 30 kunlik Bepul, Standard va Premium tariflar
+- Standard/Premium tariflarni ichki balansdan xavfsiz sotib olish
 - 360p, 720p, 1080p va faqat audio sifat tanlash
 - Yuklash navbati, foiz ko'rsatkichi va `/cancel` orqali bekor qilish
 - Yuklash tarixi va Telegram `file_id` orqali qayta yuborish
@@ -57,6 +59,10 @@ TELEGRAM_UPLOAD_MB=49
 QUEUE_CONCURRENCY=2
 DAILY_FREE_LIMIT=3
 PREMIUM_STARS=100
+TARIFF_STANDARD_PRICE=25000
+TARIFF_PREMIUM_PRICE=50000
+TARIFF_STANDARD_DAILY_LIMIT=15
+TARIFF_PERIOD_DAYS=30
 REFERRAL_REWARD=5000
 REFERRAL_NEW_USER_REWARD=2000
 PUBLIC_FILE_TTL_SECONDS=3600
@@ -74,7 +80,9 @@ Promo kod yaratish:
 ```
 
 Foydalanuvchi promo kodni `/promo KOD`, referral linkini `/referral`, tarixni
-`/history`, Premium obunani `/premium` orqali boshqaradi.
+`/history`, tariflarni `/tarif`, Stars Premium obunani `/premium` orqali
+boshqaradi. Bepul tarif bir marta 30 kunga beriladi. Standard va Premium
+tariflari botning ichki balansidan sotib olinadi.
 
 ## Profil WebApp va xavfsizlik
 
