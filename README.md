@@ -21,6 +21,8 @@ Bot quyidagilarni bajaradi:
 - Telegram limitidan katta fayl uchun vaqtinchalik HTTPS havola
 - O'zbek, rus va ingliz tilidagi asosiy menyu
 - Mini App orqali yuklash, tarix, profil, balans va admin panel
+- Mini App ichida 10 kategoriya va 100 ta tartibli servis katalogi
+- Bitta `OPENAI_API_KEY` orqali AI Chat, AI+Web va AI Image xizmatlari
 - Admin orqali `/addbalance USER_ID SUMMA` komandasi
 - Telegram WebApp orqali profil, telefon tasdiqlash kodi va ichki virtual hisoblar
 
@@ -74,6 +76,22 @@ PUBLIC_FILE_TTL_SECONDS=3600
 natija `/files/<token>` vaqtinchalik HTTPS havolasi orqali beriladi. Railway
 redeploy vaqtida ephemeral fayl o'chishi mumkin, shuning uchun katta fayl
 havolasi uzoq muddatli saqlash emas.
+
+AI xizmatlari uchun Railway `Variables` bo'limiga:
+
+```env
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-5.5
+OPENAI_IMAGE_MODEL=gpt-image-1.5
+STANDARD_AI_DAILY_LIMIT=20
+PREMIUM_AI_DAILY_LIMIT=100
+```
+
+Bitta `OPENAI_API_KEY` barcha AI servislariga ishlatiladi. Bepul tarifda faqat
+MP3/musiqa yuklash ochiq. Standard tarif katalogning taxminan yarmiga, Premium
+esa barcha xavfsiz va integratsiyasi tayyor servislarga ruxsat beradi. Tashqi
+fayl konverteri yoki alohida provayder talab qiladigan servislar katalogda
+`sozlash kerak` holatida ko'rsatiladi.
 
 Promo kod yaratish:
 

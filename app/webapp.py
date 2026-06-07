@@ -2,6 +2,7 @@ from __future__ import annotations
 
 # ruff: noqa: E501
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
@@ -19,9 +20,12 @@ from aiogram import Bot
 from aiogram.types import FSInputFile
 from aiohttp import web
 
+from app.catalog import SERVICES, plan_allows, serialize_catalog
 from app.config import Settings
 from app.database import Database
 from app.security import generate_code, hash_code, hash_password
+from app.services.ai import AIServiceError
+from app.services.catalog_executor import CatalogExecutionError, execute_local
 from app.services.downloader import MediaDownloadError, platform_for_url
 
 logger = logging.getLogger(__name__)
@@ -208,6 +212,31 @@ async def me_handler(request: web.Request) -> web.Response:
                     "alohida to'lov provayderi integratsiyasi kerak."
                 ),
             },
+            "service_count": len(SERVICES),
+            "tariff_options": {
+                "period_days": settings.tariff_period_days,
+                "standard_price": settings.tariff_standard_price,
+                "premium_price": settings.tariff_premium_price,
+                "standard_stars": settings.tariff_standard_stars,
+                "premium_stars": settings.tariff_premium_stars,
+                "bot_username": request.app["bot_username"],
+            },
+        }
+    )
+
+
+async def catalog_handler(request: web.Request) -> web.Response:
+    user = _auth_user(request)
+    database: Database = request.app["database"]
+    tariff = await database.get_active_tariff(int(user["id"]))
+    services = request.app["services"]
+    return web.json_response(
+        {
+            "active_plan": tariff.plan_code if tariff else None,
+            "categories": serialize_catalog(
+                tariff.plan_code if tariff else None,
+                ai_configured=services.ai.configured,
+            ),
         }
     )
 
@@ -358,6 +387,10 @@ async def create_download_handler(request: web.Request) -> web.Response:
         raise web.HTTPPaymentRequired(
             text="Tarif faol emas. Botda /tarif orqali tarif tanlang."
         )
+    if tariff.plan_code == "free" and quality != "audio":
+        raise web.HTTPPaymentRequired(
+            text="Bepul tarifda faqat musiqa/MP3 yuklash ishlaydi."
+        )
     if quality == "1080" and not await database.is_premium(user_id):
         raise web.HTTPPaymentRequired(text="1080p uchun Premium kerak")
     daily_limit = await database.tariff_daily_limit(
@@ -391,6 +424,113 @@ async def create_download_handler(request: web.Request) -> web.Response:
     task.add_done_callback(tasks.discard)
     return web.json_response(
         {"ok": True, "download_id": download_id, "remaining": remaining}
+    )
+
+
+async def execute_service_handler(request: web.Request) -> web.Response:
+    user = _auth_user(request)
+    user_id = int(user["id"])
+    slug = request.match_info["slug"]
+    item = SERVICES.get(slug)
+    if not item:
+        raise web.HTTPNotFound(text="Xizmat topilmadi")
+    database: Database = request.app["database"]
+    tariff = await database.get_active_tariff(user_id)
+    if not tariff:
+        raise web.HTTPPaymentRequired(
+            text="Botda /tarif orqali tarif tanlang."
+        )
+    if not plan_allows(tariff.plan_code, item.min_plan):
+        raise web.HTTPPaymentRequired(
+            text=f"Bu xizmat uchun kamida {item.min_plan.title()} tarif kerak."
+        )
+    data = await _json_body(request)
+    value = str(data.get("input", "")).strip()
+    if len(value) > 12_000:
+        raise web.HTTPRequestEntityTooLarge(
+            max_size=12_000,
+            actual_size=len(value),
+        )
+    if not value and item.mode not in {"media", "media_audio"}:
+        raise web.HTTPBadRequest(text="Ma'lumot kiriting")
+    if item.mode == "planned":
+        raise web.HTTPNotImplemented(
+            text="Bu xizmat tashqi integratsiya talab qiladi va hozir sozlanmoqda."
+        )
+    if item.mode in {"media", "media_audio"}:
+        return web.json_response(
+            {
+                "action": "media",
+                "quality": "audio" if item.mode == "media_audio" else "720",
+            }
+        )
+    if item.mode in {"local", "local_image"}:
+        try:
+            result = await asyncio.to_thread(execute_local, item.slug, value)
+        except CatalogExecutionError as exc:
+            raise web.HTTPBadRequest(text=str(exc)) from exc
+        if result.image:
+            encoded = base64.b64encode(result.image).decode("ascii")
+            return web.json_response(
+                {
+                    "text": result.text,
+                    "image_data": f"data:image/png;base64,{encoded}",
+                    "image_name": result.image_name,
+                }
+            )
+        return web.json_response({"text": result.text})
+
+    services = request.app["services"]
+    if not services.ai.configured:
+        raise web.HTTPServiceUnavailable(
+            text="OPENAI_API_KEY Railway Variables bo'limida sozlanmagan."
+        )
+    settings: Settings = request.app["settings"]
+    ai_limit = (
+        settings.premium_ai_daily_limit
+        if tariff.plan_code == "premium"
+        else settings.standard_ai_daily_limit
+    )
+    allowed, remaining = await database.reserve_service_use(user_id, ai_limit)
+    if not allowed:
+        raise web.HTTPTooManyRequests(
+            text="Bugungi AI xizmatlari limitingiz tugagan."
+        )
+    try:
+        if item.mode == "ai_image":
+            image = await services.ai.generate_image(
+                prompt=value,
+                instructions=item.prompt,
+            )
+            encoded = base64.b64encode(image).decode("ascii")
+            return web.json_response(
+                {
+                    "image_data": f"data:image/png;base64,{encoded}",
+                    "remaining": remaining,
+                }
+            )
+        result = await services.ai.respond(
+            user_input=value,
+            instructions=item.prompt,
+            web_search=item.mode == "ai_web",
+            domains=item.domains,
+        )
+    except AIServiceError as exc:
+        await database.release_service_use(user_id)
+        await database.log_error(f"service:{slug}", str(exc), user_id)
+        raise web.HTTPBadGateway(text=str(exc)) from exc
+    except Exception as exc:
+        await database.release_service_use(user_id)
+        await database.log_error(f"service:{slug}", str(exc), user_id)
+        raise web.HTTPInternalServerError(
+            text="AI xizmati vaqtincha ishlamayapti."
+        ) from exc
+    return web.json_response(
+        {
+            "text": result.text,
+            "sources": list(result.sources),
+            "remaining": remaining,
+        }
     )
 
 
@@ -550,13 +690,17 @@ async def start_web_app(
     app["bot"] = bot
     app["services"] = services
     app["tasks"] = set()
+    bot_info = await bot.get_me()
+    app["bot_username"] = bot_info.username or ""
     app.add_routes(
         [
             web.get("/", index_handler),
             web.get("/health", health_handler),
             web.get("/files/{token}", public_file_handler),
             web.get("/api/me", me_handler),
+            web.get("/api/catalog", catalog_handler),
             web.post("/api/downloads", create_download_handler),
+            web.post("/api/services/{slug}/execute", execute_service_handler),
             web.post("/api/language", set_language_handler),
             web.post("/api/profile", save_profile_handler),
             web.post("/api/phone/request-code", request_code_handler),
@@ -983,6 +1127,226 @@ WEBAPP_HTML = """<!doctype html>
     }
     .info-card b { display: block; color: var(--text); font-size: 12px; margin-bottom: 2px; }
     .info-icon { color: #72e59d; font-size: 20px; }
+    .service-hub {
+      margin-top: 16px;
+      padding: 18px;
+      border: 1px solid var(--border);
+      border-radius: 26px;
+      background:
+        radial-gradient(circle at 95% 0%, rgba(91, 69, 232, .2), transparent 35%),
+        rgba(10, 20, 34, .94);
+      box-shadow: 0 20px 55px rgba(0,0,0,.18);
+    }
+    .pricing-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; }
+    .price-card {
+      position: relative;
+      padding: 14px 11px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background: rgba(255,255,255,.035);
+    }
+    .price-card.featured {
+      border-color: rgba(169,108,255,.3);
+      background: linear-gradient(145deg, rgba(91,69,232,.18), rgba(169,108,255,.08));
+    }
+    .price-card b { display: block; font-size: 12px; }
+    .price-card strong { display: block; margin-top: 10px; font-size: 15px; }
+    .price-card small { display: block; min-height: 28px; margin-top: 5px; color: var(--muted); font-size: 8px; line-height: 1.4; }
+    .price-card button { width: 100%; min-height: 34px; margin-top: 10px; padding: 0 7px; border-radius: 10px; color: white; background: rgba(42,171,238,.18); font-size: 9px; font-weight: 900; }
+    .hub-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .hub-head h2 { margin: 0; font-size: 21px; letter-spacing: -.6px; }
+    .hub-head p { margin: 5px 0 0; color: var(--muted); font-size: 11px; }
+    .service-count {
+      flex: 0 0 auto;
+      padding: 8px 10px;
+      border: 1px solid rgba(95, 198, 255, .25);
+      border-radius: 999px;
+      color: #8fd6ff;
+      background: rgba(42,171,238,.09);
+      font-size: 10px;
+      font-weight: 900;
+    }
+    .catalog-search { position: relative; margin: 16px 0 14px; }
+    .catalog-search input { padding-left: 42px; }
+    .catalog-search::before {
+      content: "⌕";
+      position: absolute;
+      z-index: 1;
+      left: 15px;
+      top: 11px;
+      color: var(--muted);
+      font-size: 22px;
+    }
+    .category-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .category-card {
+      position: relative;
+      min-height: 132px;
+      padding: 15px;
+      overflow: hidden;
+      text-align: left;
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      color: var(--text);
+      background: rgba(255,255,255,.035);
+    }
+    .category-card::after {
+      content: "";
+      position: absolute;
+      width: 90px;
+      height: 90px;
+      right: -35px;
+      bottom: -40px;
+      border-radius: 50%;
+      background: var(--category-color);
+      opacity: .18;
+    }
+    .category-icon {
+      width: 42px;
+      height: 42px;
+      display: grid;
+      place-items: center;
+      margin-bottom: 11px;
+      border-radius: 14px;
+      background: color-mix(in srgb, var(--category-color) 18%, transparent);
+      font-size: 20px;
+    }
+    .category-card strong { display: block; font-size: 13px; line-height: 1.25; }
+    .category-card small { display: block; margin-top: 5px; color: var(--muted); font-size: 9px; line-height: 1.35; }
+    .category-meta {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 10px;
+      color: var(--category-color);
+      font-size: 9px;
+      font-weight: 800;
+    }
+    .catalog-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 13px; }
+    .back-button {
+      width: 38px;
+      height: 38px;
+      flex: 0 0 auto;
+      border-radius: 12px;
+      color: var(--text);
+      background: rgba(148,163,184,.1);
+    }
+    .catalog-toolbar h3 { margin: 0; font-size: 16px; }
+    .service-grid { display: grid; gap: 9px; }
+    .service-card {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 13px;
+      text-align: left;
+      border: 1px solid var(--border);
+      border-radius: 17px;
+      color: var(--text);
+      background: rgba(255,255,255,.03);
+    }
+    .service-card.locked { opacity: .62; }
+    .service-card-icon {
+      width: 43px;
+      height: 43px;
+      flex: 0 0 auto;
+      display: grid;
+      place-items: center;
+      border-radius: 14px;
+      background: rgba(42,171,238,.1);
+      font-size: 20px;
+    }
+    .service-card-copy { min-width: 0; flex: 1; }
+    .service-card strong { display: block; font-size: 12px; }
+    .service-card small { display: block; margin-top: 4px; overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+    .plan-chip {
+      flex: 0 0 auto;
+      padding: 5px 7px;
+      border-radius: 999px;
+      color: #8fd6ff;
+      background: rgba(42,171,238,.09);
+      font-size: 8px;
+      font-weight: 900;
+      text-transform: uppercase;
+    }
+    .plan-chip.premium { color: #e1c0ff; background: rgba(169,108,255,.12); }
+    .plan-chip.free { color: #7beaa3; background: rgba(55,214,122,.1); }
+    .service-modal {
+      position: fixed;
+      z-index: 60;
+      inset: 0;
+      display: none;
+      align-items: flex-end;
+      background: rgba(2,7,15,.78);
+      backdrop-filter: blur(10px);
+    }
+    .service-modal.show { display: flex; }
+    .service-sheet {
+      width: min(100%, 760px);
+      max-height: 88vh;
+      margin: 0 auto;
+      padding: 18px 16px calc(22px + env(safe-area-inset-bottom));
+      overflow-y: auto;
+      border: 1px solid var(--border);
+      border-bottom: 0;
+      border-radius: 27px 27px 0 0;
+      background: #0d1928;
+      box-shadow: 0 -25px 70px rgba(0,0,0,.45);
+    }
+    .sheet-grabber { width: 42px; height: 4px; margin: 0 auto 17px; border-radius: 9px; background: rgba(148,163,184,.35); }
+    .sheet-head { display: flex; align-items: flex-start; gap: 12px; }
+    .sheet-icon {
+      width: 48px;
+      height: 48px;
+      flex: 0 0 auto;
+      display: grid;
+      place-items: center;
+      border-radius: 16px;
+      background: rgba(42,171,238,.12);
+      font-size: 23px;
+    }
+    .sheet-copy { min-width: 0; flex: 1; }
+    .sheet-copy h3 { margin: 2px 0 4px; font-size: 17px; }
+    .sheet-copy p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+    .close-sheet { width: 37px; height: 37px; border-radius: 12px; color: var(--text); background: rgba(148,163,184,.1); }
+    #service_input {
+      width: 100%;
+      min-height: 112px;
+      margin-top: 16px;
+      padding: 13px;
+      resize: vertical;
+      outline: none;
+      border: 1px solid rgba(148,163,184,.17);
+      border-radius: 15px;
+      color: var(--text);
+      background: rgba(3,10,20,.45);
+      font: inherit;
+    }
+    .service-result {
+      display: none;
+      margin-top: 14px;
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 17px;
+      color: var(--text);
+      background: rgba(255,255,255,.035);
+      font-size: 11px;
+      line-height: 1.65;
+      white-space: pre-wrap;
+    }
+    .service-result.show { display: block; }
+    #service_image { display: none; width: 100%; margin-top: 13px; border-radius: 17px; }
+    #service_sources { display: grid; gap: 7px; margin-top: 11px; }
+    #service_sources a { color: var(--link); font-size: 10px; text-decoration: none; }
+    .service-notice { margin-top: 14px; color: #ffc567; font-size: 10px; line-height: 1.5; }
     .footer { padding: 22px 10px 4px; text-align: center; color: var(--muted); font-size: 9px; }
 
     .toast {
@@ -1053,6 +1417,8 @@ WEBAPP_HTML = """<!doctype html>
       .verify-row .btn { width: 100%; }
       .secure-pill span { display: none; }
       .balance-card { min-height: 180px; }
+      .category-grid { grid-template-columns: 1fr 1fr; }
+      .pricing-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -1101,7 +1467,57 @@ WEBAPP_HTML = """<!doctype html>
       </div>
     </section>
 
-    <section class="section">
+    <section class="section" id="tariffs_section">
+      <div class="section-head">
+        <div class="section-title">
+          <div class="section-icon">★</div>
+          <div><h2>Oylik tariflar</h2><div class="section-sub">Balans yoki Telegram Stars bilan to'lang</div></div>
+        </div>
+      </div>
+      <div class="pricing-grid">
+        <article class="price-card">
+          <b>🆓 Bepul</b>
+          <strong>0 so'm</strong>
+          <small>30 kun · faqat musiqa/MP3 yuklash</small>
+          <button onclick="openTariffs()">Tanlash</button>
+        </article>
+        <article class="price-card">
+          <b>⚡ Standard</b>
+          <strong id="standard_price">25 000 so'm</strong>
+          <small id="standard_stars">25 Stars · katalogning yarmi</small>
+          <button onclick="openTariffs()">Sotib olish</button>
+        </article>
+        <article class="price-card featured">
+          <b>💎 Premium</b>
+          <strong id="premium_price">50 000 so'm</strong>
+          <small id="premium_stars">50 Stars · barcha tayyor servislar</small>
+          <button onclick="openTariffs()">Sotib olish</button>
+        </article>
+      </div>
+    </section>
+
+    <section class="service-hub" id="services_hub">
+      <div class="hub-head">
+        <div>
+          <h2>100 ta xizmat markazi</h2>
+          <p>Kategoriyani oching, keyin kerakli funksiyani tanlang</p>
+        </div>
+        <span class="service-count" id="service_count">100 servis</span>
+      </div>
+      <div class="catalog-search">
+        <input id="catalog_search" placeholder="Xizmat qidirish..." oninput="searchCatalog(this.value)" />
+      </div>
+      <div id="category_view" class="category-grid"></div>
+      <div id="service_view" style="display:none">
+        <div class="catalog-toolbar">
+          <button class="back-button" onclick="showCategories()">←</button>
+          <div><h3 id="category_title">Kategoriya</h3><div class="section-sub" id="category_subtitle"></div></div>
+        </div>
+        <div id="service_grid" class="service-grid"></div>
+      </div>
+    </section>
+
+    <section class="section" id="media_download_section">
       <div class="section-head">
         <div class="section-title">
           <div class="section-icon">↓</div>
@@ -1247,6 +1663,25 @@ WEBAPP_HTML = """<!doctype html>
       <small>Iltimos, bir necha soniya kuting</small>
     </div>
   </div>
+  <div id="service_modal" class="service-modal" onclick="modalBackdrop(event)">
+    <div class="service-sheet">
+      <div class="sheet-grabber"></div>
+      <div class="sheet-head">
+        <div class="sheet-icon" id="service_icon">⚙</div>
+        <div class="sheet-copy">
+          <h3 id="service_title">Xizmat</h3>
+          <p id="service_description"></p>
+        </div>
+        <button class="close-sheet" onclick="closeService()">×</button>
+      </div>
+      <div class="service-notice" id="service_notice"></div>
+      <textarea id="service_input" placeholder="So'rovingizni yozing"></textarea>
+      <button class="btn" id="service_run_btn" style="width:100%;margin-top:11px" onclick="runService()">Ishga tushirish</button>
+      <div id="service_result" class="service-result"></div>
+      <img id="service_image" alt="AI yoki QR natijasi" />
+      <div id="service_sources"></div>
+    </div>
+  </div>
 
   <script>
     const tg = window.Telegram?.WebApp;
@@ -1258,6 +1693,10 @@ WEBAPP_HTML = """<!doctype html>
     }
     const initData = tg?.initData || "";
     let toastTimer;
+    let catalogData = [];
+    let currentService = null;
+    let activePlan = null;
+    let botUsername = "";
     const UI_TEXT = {
       uz: {
         download: "Media yuklash", downloadSub: "Natija bot chatiga yuboriladi",
@@ -1348,9 +1787,219 @@ WEBAPP_HTML = """<!doctype html>
       el.className = ok ? "ok" : "warn";
     }
 
+    function planLabel(plan) {
+      return {free: "Bepul", standard: "Standard", premium: "Premium"}[plan] || plan;
+    }
+
+    function renderCategories() {
+      const root = document.getElementById("category_view");
+      document.getElementById("service_view").style.display = "none";
+      root.style.display = "grid";
+      root.innerHTML = catalogData.map(category => {
+        const openCount = category.services.filter(item => item.unlocked).length;
+        return `
+          <button class="category-card" style="--category-color:${escapeHtml(category.color)}" onclick="openCategory('${category.slug}')">
+            <span class="category-icon">${category.icon}</span>
+            <strong>${escapeHtml(category.title)}</strong>
+            <small>${escapeHtml(category.subtitle)}</small>
+            <span class="category-meta"><span>${category.services.length} servis</span><span>${openCount} ochiq →</span></span>
+          </button>`;
+      }).join("");
+    }
+
+    function renderServices(items) {
+      const root = document.getElementById("service_grid");
+      root.innerHTML = items.map(item => `
+        <button class="service-card ${item.unlocked ? "" : "locked"}" onclick="openService('${item.slug}')">
+          <span class="service-card-icon">${item.icon}</span>
+          <span class="service-card-copy">
+            <strong>${escapeHtml(item.name)}</strong>
+            <small>${escapeHtml(item.description)}</small>
+          </span>
+          <span class="plan-chip ${item.min_plan}">${item.unlocked ? planLabel(item.min_plan) : "🔒 " + planLabel(item.min_plan)}</span>
+        </button>
+      `).join("");
+    }
+
+    function openCategory(slug) {
+      const category = catalogData.find(item => item.slug === slug);
+      if (!category) return;
+      document.getElementById("category_view").style.display = "none";
+      document.getElementById("service_view").style.display = "block";
+      document.getElementById("category_title").textContent = category.icon + " " + category.title;
+      document.getElementById("category_subtitle").textContent = category.subtitle;
+      renderServices(category.services);
+      haptic();
+    }
+
+    function showCategories() {
+      document.getElementById("catalog_search").value = "";
+      renderCategories();
+    }
+
+    function searchCatalog(value) {
+      const query = value.trim().toLowerCase();
+      if (!query) {
+        renderCategories();
+        return;
+      }
+      const matches = catalogData.flatMap(category => category.services).filter(item =>
+        (item.name + " " + item.description).toLowerCase().includes(query)
+      );
+      document.getElementById("category_view").style.display = "none";
+      document.getElementById("service_view").style.display = "block";
+      document.getElementById("category_title").textContent = "⌕ Qidiruv natijalari";
+      document.getElementById("category_subtitle").textContent = matches.length + " ta servis topildi";
+      renderServices(matches);
+    }
+
+    function findService(slug) {
+      return catalogData.flatMap(category => category.services).find(item => item.slug === slug);
+    }
+
+    function openService(slug) {
+      const item = findService(slug);
+      if (!item) return;
+      if (!item.unlocked) {
+        toast("Bu xizmat uchun " + planLabel(item.min_plan) + " tarif kerak", false);
+        tg?.HapticFeedback?.notificationOccurred("warning");
+        return;
+      }
+      currentService = item;
+      document.getElementById("service_icon").textContent = item.icon;
+      document.getElementById("service_title").textContent = item.name;
+      document.getElementById("service_description").textContent = item.description;
+      document.getElementById("service_input").placeholder = item.placeholder || "So'rovingizni yozing";
+      document.getElementById("service_input").value = "";
+      document.getElementById("service_result").classList.remove("show");
+      document.getElementById("service_result").textContent = "";
+      document.getElementById("service_image").style.display = "none";
+      document.getElementById("service_sources").innerHTML = "";
+      const notice = document.getElementById("service_notice");
+      const button = document.getElementById("service_run_btn");
+      if (!item.ready) {
+        notice.textContent = item.configured
+          ? "Bu servis uchun tashqi integratsiya tayyorlanmoqda."
+          : "AI xizmatlari uchun serverda OPENAI_API_KEY sozlanishi kerak.";
+        button.disabled = true;
+      } else {
+        notice.textContent = item.mode === "ai_web"
+          ? "Natija internet manbalari bilan tekshiriladi."
+          : "";
+        button.disabled = false;
+      }
+      document.getElementById("service_modal").classList.add("show");
+      haptic();
+    }
+
+    function closeService() {
+      document.getElementById("service_modal").classList.remove("show");
+      currentService = null;
+    }
+
+    function modalBackdrop(event) {
+      if (event.target.id === "service_modal") closeService();
+    }
+
+    async function runService() {
+      if (!currentService) return;
+      const input = document.getElementById("service_input").value.trim();
+      if (!input && !["media", "media_audio"].includes(currentService.mode)) {
+        toast("Ma'lumot kiriting", false);
+        return;
+      }
+      setBusy(true, currentService.name + " ishlamoqda");
+      try {
+        const result = await api("/api/services/" + currentService.slug + "/execute", {
+          method: "POST",
+          body: JSON.stringify({ input })
+        });
+        if (result.action === "media") {
+          closeService();
+          document.getElementById("download_quality").value = result.quality || "720";
+          document.getElementById("media_download_section").scrollIntoView({behavior: "smooth"});
+          document.getElementById("download_url").focus();
+          toast("Havolani kiriting va yuklashni boshlang");
+          return;
+        }
+        const output = document.getElementById("service_result");
+        output.textContent = result.text || "";
+        output.classList.toggle("show", !!result.text);
+        const image = document.getElementById("service_image");
+        if (result.image_data) {
+          image.src = result.image_data;
+          image.style.display = "block";
+        } else {
+          image.style.display = "none";
+        }
+        const sources = document.getElementById("service_sources");
+        sources.innerHTML = "";
+        (result.sources || []).forEach(source => {
+          try {
+            const url = new URL(source.url);
+            if (!["http:", "https:"].includes(url.protocol)) return;
+            const link = document.createElement("a");
+            link.href = url.href;
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+            link.textContent = "↗ " + (source.title || url.hostname);
+            sources.appendChild(link);
+          } catch (_) {}
+        });
+        toast("Xizmat natijasi tayyor");
+        tg?.HapticFeedback?.notificationOccurred("success");
+      } catch (error) {
+        toast(error.message, false);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    function applyPlanLimits(plan) {
+      const select = document.getElementById("download_quality");
+      Array.from(select.options).forEach(option => {
+        option.disabled =
+          (plan === "free" && option.value !== "audio") ||
+          (plan === "standard" && option.value === "1080");
+      });
+      if (plan === "free") select.value = "audio";
+      if (plan === "standard" && select.value === "1080") select.value = "720";
+    }
+
+    function openTariffs() {
+      if (!botUsername) {
+        toast("Bot username topilmadi. Bot chatida /tarif ni bosing.", false);
+        return;
+      }
+      const url = "https://t.me/" + botUsername + "?start=tarif";
+      if (tg?.openTelegramLink) {
+        tg.openTelegramLink(url);
+      } else {
+        window.location.href = url;
+      }
+    }
+
     async function load() {
       try {
-        const data = await api("/api/me");
+        const [data, catalog] = await Promise.all([
+          api("/api/me"),
+          api("/api/catalog")
+        ]);
+        catalogData = catalog.categories || [];
+        activePlan = catalog.active_plan;
+        botUsername = data.tariff_options?.bot_username || "";
+        document.getElementById("service_count").textContent =
+          (data.service_count || 100) + " servis";
+        document.getElementById("standard_price").textContent =
+          money(data.tariff_options?.standard_price || 0);
+        document.getElementById("premium_price").textContent =
+          money(data.tariff_options?.premium_price || 0);
+        document.getElementById("standard_stars").textContent =
+          (data.tariff_options?.standard_stars || 0) + " Stars · katalogning yarmi";
+        document.getElementById("premium_stars").textContent =
+          (data.tariff_options?.premium_stars || 0) + " Stars · barcha tayyor servislar";
+        renderCategories();
+        applyPlanLimits(activePlan);
         const p = data.profile || {};
         const user = data.telegram_user || {};
         const firstName = p.first_name || user.first_name || "Telegram";

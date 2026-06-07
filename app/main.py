@@ -14,6 +14,7 @@ from app.config import Settings
 from app.database import Database
 from app.handlers import Services, build_router
 from app.jobs import JobManager
+from app.services.ai import AIService
 from app.services.downloader import DownloadService
 from app.services.media import MediaService
 from app.services.telegram_downloader import TelegramDownloadService
@@ -33,12 +34,12 @@ async def configure_bot_profile(bot: Bot, webapp_public_url: str | None) -> None
         ]
     )
     await bot.set_my_short_description(
-        "YouTube va Instagram video/MP3 yuklash, aylana video tayyorlash boti."
+        "100 ta media, AI, ta'lim, biznes va kundalik xizmatlar Mini App'i."
     )
     await bot.set_my_description(
-        "YouTube va Instagram havolasidan video yoki MP3 yuklaydi. "
-        "Videoni Telegram aylana videosiga, aylana videoni esa oddiy 16:9 videoga "
-        "aylantiradi. Ishlash uchun /start ni bosing."
+        "Media yuklash, AI, hujjatlar, ta'lim, ob-havo, biznes va boshqa "
+        "kategoriyalardagi xizmatlar. Open tugmasi orqali Mini App'ni oching. "
+        "Ishlash uchun /start ni bosing va tarif tanlang."
     )
     if webapp_public_url:
         await bot.set_chat_menu_button(
@@ -79,6 +80,11 @@ async def run() -> None:
         media=MediaService(),
         telegram=telegram,
         jobs=JobManager(settings.queue_concurrency),
+        ai=AIService(
+            api_key=settings.openai_api_key,
+            model=settings.openai_model,
+            image_model=settings.openai_image_model,
+        ),
     )
 
     session = None

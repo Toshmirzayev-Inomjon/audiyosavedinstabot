@@ -109,6 +109,14 @@ CREATE TABLE IF NOT EXISTS daily_usage (
     FOREIGN KEY (user_id) REFERENCES users(user_id)
 );
 
+CREATE TABLE IF NOT EXISTS service_daily_usage (
+    user_id INTEGER NOT NULL,
+    usage_date TEXT NOT NULL,
+    count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, usage_date),
+    FOREIGN KEY (user_id) REFERENCES users(user_id)
+);
+
 CREATE TABLE IF NOT EXISTS subscriptions (
     user_id INTEGER PRIMARY KEY,
     status TEXT NOT NULL DEFAULT 'active',
@@ -1322,6 +1330,63 @@ class Database:
             db.execute(
                 """
                 UPDATE daily_usage
+                SET count = CASE WHEN count > 0 THEN count - 1 ELSE 0 END
+                WHERE user_id = ? AND usage_date = ?
+                """,
+                (user_id, usage_date),
+            )
+
+    async def reserve_service_use(
+        self,
+        user_id: int,
+        limit: int,
+    ) -> tuple[bool, int]:
+        usage_date = datetime.now(UTC).date().isoformat()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if self.postgres:
+                row = db.execute(
+                    """
+                    INSERT INTO service_daily_usage (user_id, usage_date, count)
+                    VALUES (?, ?, 1)
+                    ON CONFLICT(user_id, usage_date) DO UPDATE SET
+                        count = service_daily_usage.count + 1
+                    WHERE service_daily_usage.count < ?
+                    RETURNING count
+                    """,
+                    (user_id, usage_date, limit),
+                ).fetchone()
+                if not row:
+                    return False, 0
+                used = int(row[0])
+                return True, max(0, limit - used)
+            row = db.execute(
+                """
+                SELECT count FROM service_daily_usage
+                WHERE user_id = ? AND usage_date = ?
+                """,
+                (user_id, usage_date),
+            ).fetchone()
+            used = int(row[0]) if row else 0
+            if used >= limit:
+                return False, 0
+            db.execute(
+                """
+                INSERT INTO service_daily_usage (user_id, usage_date, count)
+                VALUES (?, ?, 1)
+                ON CONFLICT(user_id, usage_date) DO UPDATE SET
+                    count = service_daily_usage.count + 1
+                """,
+                (user_id, usage_date),
+            )
+            return True, max(0, limit - used - 1)
+
+    async def release_service_use(self, user_id: int) -> None:
+        usage_date = datetime.now(UTC).date().isoformat()
+        with self._connect() as db:
+            db.execute(
+                """
+                UPDATE service_daily_usage
                 SET count = CASE WHEN count > 0 THEN count - 1 ELSE 0 END
                 WHERE user_id = ? AND usage_date = ?
                 """,

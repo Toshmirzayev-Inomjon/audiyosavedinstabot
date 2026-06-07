@@ -27,6 +27,7 @@ from aiogram.types import (
     ReplyKeyboardRemove,
 )
 
+from app.catalog import plan_allows
 from app.config import Settings
 from app.database import Database
 from app.i18n import text as i18n_text
@@ -43,6 +44,7 @@ from app.keyboards import (
     tariff_confirm_keyboard,
     tariff_keyboard,
 )
+from app.services.ai import AIService
 from app.services.downloader import (
     DownloadCancelled,
     DownloadService,
@@ -88,6 +90,7 @@ class Services:
     media: MediaService
     telegram: TelegramDownloadService
     jobs: JobManager
+    ai: AIService
     public_base_url: str | None = None
 
 
@@ -190,6 +193,29 @@ async def _require_active_tariff(
     await message.answer(
         _tariff_catalog_text(settings),
         reply_markup=_tariff_markup(settings),
+    )
+    return False
+
+
+async def _require_tariff_plan(
+    message: Message,
+    database: Database,
+    settings: Settings,
+    required_plan: str,
+) -> bool:
+    if not message.from_user:
+        return False
+    tariff = await database.get_active_tariff(message.from_user.id)
+    if tariff and plan_allows(tariff.plan_code, required_plan):
+        return True
+    if not tariff:
+        return await _require_active_tariff(message, database, settings)
+    await message.answer(
+        f"Bu xizmat uchun kamida {_tariff_name(required_plan)} tarif kerak.\n"
+        "Tarifni /tarif orqali almashtiring.",
+        reply_markup=main_keyboard(
+            await database.get_language(message.from_user.id)
+        ),
     )
     return False
 
@@ -428,8 +454,10 @@ def build_router(services: Services) -> Router:
     async def start_handler(message: Message, state: FSMContext) -> None:
         await state.clear()
         await ensure_user(message, database)
+        start_payload = ""
         if message.from_user and message.text:
             parts = message.text.split(maxsplit=1)
+            start_payload = parts[1] if len(parts) == 2 else ""
             if len(parts) == 2 and parts[1].startswith("ref_"):
                 try:
                     inviter_id = int(parts[1][4:])
@@ -442,6 +470,12 @@ def build_router(services: Services) -> Router:
                         inviter_reward=settings.referral_reward,
                         invitee_reward=settings.referral_new_user_reward,
                     )
+        if start_payload == "tarif":
+            await message.answer(
+                _tariff_catalog_text(settings),
+                reply_markup=_tariff_markup(settings),
+            )
+            return
         language = (
             await database.get_language(message.from_user.id)
             if message.from_user
@@ -1096,7 +1130,12 @@ def build_router(services: Services) -> Router:
     @router.message(F.text.in_(VIDEO_LABELS | {"Video yuklash"}))
     async def choose_video(message: Message, state: FSMContext) -> None:
         await ensure_user(message, database)
-        if not await _require_active_tariff(message, database, settings):
+        if not await _require_tariff_plan(
+            message,
+            database,
+            settings,
+            "standard",
+        ):
             await state.clear()
             return
         await state.set_state(MediaStates.video_quality)
@@ -1111,10 +1150,11 @@ def build_router(services: Services) -> Router:
     async def quality_callback(callback: CallbackQuery, state: FSMContext) -> None:
         if not callback.data:
             return
-        if not await database.get_active_tariff(callback.from_user.id):
+        tariff = await database.get_active_tariff(callback.from_user.id)
+        if not tariff or not plan_allows(tariff.plan_code, "standard"):
             await state.clear()
             await callback.answer(
-                "Tarif faol emas. /tarif orqali tarif tanlang.",
+                "Video uchun kamida Standard tarif kerak.",
                 show_alert=True,
             )
             return
@@ -1208,7 +1248,12 @@ def build_router(services: Services) -> Router:
     @router.message(F.text.in_(CIRCLE_LABELS | {"Aylana video qilish"}))
     async def choose_circle(message: Message, state: FSMContext) -> None:
         await ensure_user(message, database)
-        if not await _require_active_tariff(message, database, settings):
+        if not await _require_tariff_plan(
+            message,
+            database,
+            settings,
+            "standard",
+        ):
             await state.clear()
             return
         await state.set_state(MediaStates.circle)
@@ -1224,7 +1269,12 @@ def build_router(services: Services) -> Router:
     )
     async def choose_rectangle(message: Message, state: FSMContext) -> None:
         await ensure_user(message, database)
-        if not await _require_active_tariff(message, database, settings):
+        if not await _require_tariff_plan(
+            message,
+            database,
+            settings,
+            "standard",
+        ):
             await state.clear()
             return
         await state.set_state(MediaStates.rectangle)
@@ -1244,7 +1294,12 @@ def build_router(services: Services) -> Router:
         await ensure_user(message, database)
         if not message.from_user:
             return
-        if not await _require_active_tariff(message, database, settings):
+        if not await _require_tariff_plan(
+            message,
+            database,
+            settings,
+            "standard",
+        ):
             await state.clear()
             return
         daily_limit = await database.tariff_daily_limit(
@@ -1494,7 +1549,12 @@ def build_router(services: Services) -> Router:
         await ensure_user(message, database)
         if not message.from_user:
             return
-        if not await _require_active_tariff(message, database, settings):
+        if not await _require_tariff_plan(
+            message,
+            database,
+            settings,
+            "standard",
+        ):
             await state.clear()
             return
         charged = await database.charge(
@@ -1565,7 +1625,12 @@ def build_router(services: Services) -> Router:
         bot: Bot,
     ) -> None:
         await ensure_user(message, database)
-        if not await _require_active_tariff(message, database, settings):
+        if not await _require_tariff_plan(
+            message,
+            database,
+            settings,
+            "standard",
+        ):
             await state.clear()
             return
         status = await message.answer("To'rtburchak video tayyorlanmoqda...")

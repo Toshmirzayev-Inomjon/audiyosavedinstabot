@@ -109,6 +109,11 @@ class Settings:
     tariff_premium_stars: int = 50
     tariff_standard_daily_limit: int = 15
     tariff_period_days: int = 30
+    openai_api_key: str | None = None
+    openai_model: str = "gpt-5.5"
+    openai_image_model: str = "gpt-image-1.5"
+    standard_ai_daily_limit: int = 20
+    premium_ai_daily_limit: int = 100
 
     @property
     def max_download_bytes(self) -> int:
@@ -189,6 +194,14 @@ class Settings:
                 15,
             ),
             tariff_period_days=_as_int("TARIFF_PERIOD_DAYS", 30),
+            openai_api_key=os.getenv("OPENAI_API_KEY", "").strip() or None,
+            openai_model=os.getenv("OPENAI_MODEL", "gpt-5.5").strip(),
+            openai_image_model=os.getenv(
+                "OPENAI_IMAGE_MODEL",
+                "gpt-image-1.5",
+            ).strip(),
+            standard_ai_daily_limit=_as_int("STANDARD_AI_DAILY_LIMIT", 20),
+            premium_ai_daily_limit=_as_int("PREMIUM_AI_DAILY_LIMIT", 100),
         )
         if settings.circle_price < 0 or settings.initial_balance < 0:
             raise ValueError("Balans va narx manfiy bo'lishi mumkin emas")
@@ -214,6 +227,13 @@ class Settings:
             raise ValueError("Limit va Premium sozlamalari musbat bo'lishi kerak")
         if settings.bot_api_local and not settings.bot_api_base:
             raise ValueError("BOT_API_LOCAL=true bo'lsa BOT_API_BASE berilishi kerak")
+        if not settings.openai_model or not settings.openai_image_model:
+            raise ValueError("OpenAI model nomlari bo'sh bo'lishi mumkin emas")
+        if (
+            settings.standard_ai_daily_limit <= 0
+            or settings.premium_ai_daily_limit <= 0
+        ):
+            raise ValueError("AI kunlik limitlari musbat bo'lishi kerak")
         return settings
 
     def prepare_directories(self) -> None:

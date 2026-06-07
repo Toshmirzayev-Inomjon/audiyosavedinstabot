@@ -245,6 +245,24 @@ async def test_tariff_stars_payment_is_idempotent(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_service_daily_limit_can_be_released(tmp_path: Path) -> None:
+    database = Database(tmp_path / "test.sqlite3")
+    await database.initialize()
+    await database.ensure_user(10, "user", "Test User")
+
+    allowed, remaining = await database.reserve_service_use(10, 1)
+    assert allowed is True
+    assert remaining == 0
+    blocked, _ = await database.reserve_service_use(10, 1)
+    assert blocked is False
+
+    await database.release_service_use(10)
+    allowed_again, remaining_again = await database.reserve_service_use(10, 1)
+    assert allowed_again is True
+    assert remaining_again == 0
+
+
+@pytest.mark.asyncio
 async def test_referral_promo_premium_limit_and_history(tmp_path: Path) -> None:
     database = Database(tmp_path / "test.sqlite3")
     await database.initialize()

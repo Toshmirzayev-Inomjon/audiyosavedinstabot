@@ -41,3 +41,17 @@ def test_railway_port_is_used_when_webapp_port_is_missing(
     settings = Settings.load(tmp_path / "empty.env")
 
     assert settings.webapp_port == 4321
+
+
+def test_openai_uses_one_api_key_for_ai_services(monkeypatch, tmp_path) -> None:
+    _required_env(monkeypatch)
+    monkeypatch.setenv("APP_ROOT", str(tmp_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_MODEL", "test-text-model")
+    monkeypatch.setenv("OPENAI_IMAGE_MODEL", "test-image-model")
+
+    settings = Settings.load(tmp_path / "empty.env")
+
+    assert settings.openai_api_key == "test-key"
+    assert settings.openai_model == "test-text-model"
+    assert settings.openai_image_model == "test-image-model"
