@@ -8,7 +8,14 @@ import aiohttp
 
 
 class AIServiceError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        quota_exceeded: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.quota_exceeded = quota_exceeded
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +85,10 @@ class AIService:
             f"{quote(model_name, safe='/')}:generateContent"
         )
 
+    @property
+    def _can_fallback_to_openai(self) -> bool:
+        return self.provider == "auto" and bool(self.openai_api_key)
+
     async def respond(
         self,
         *,
@@ -87,12 +98,22 @@ class AIService:
         domains: tuple[str, ...] = (),
     ) -> AIResult:
         if self.active_provider == "gemini":
-            return await self._respond_gemini(
-                user_input=user_input,
-                instructions=instructions,
-                web_search=web_search,
-                domains=domains,
-            )
+            try:
+                return await self._respond_gemini(
+                    user_input=user_input,
+                    instructions=instructions,
+                    web_search=web_search,
+                    domains=domains,
+                )
+            except AIServiceError:
+                if not self._can_fallback_to_openai:
+                    raise
+                return await self._respond_openai(
+                    user_input=user_input,
+                    instructions=instructions,
+                    web_search=web_search,
+                    domains=domains,
+                )
         if self.active_provider == "openai":
             return await self._respond_openai(
                 user_input=user_input,
@@ -223,18 +244,35 @@ class AIService:
             ) as response:
                 data = await response.json(content_type=None)
                 if response.status >= 400:
-                    raise AIServiceError(self._gemini_error(data))
+                    raise self._gemini_error(data)
         text, sources = self._parse_gemini_text(data)
         if not text:
             raise AIServiceError("Gemini bo'sh javob qaytardi")
         return AIResult(text=text, sources=tuple(sources[:8]))
 
-    def _gemini_error(self, data: object) -> str:
+    def _gemini_error(self, data: object) -> AIServiceError:
+        message = "Gemini provayder xatosi"
         if isinstance(data, dict):
             error = data.get("error")
             if isinstance(error, dict) and error.get("message"):
-                return str(error["message"])
-        return "Gemini provayder xatosi"
+                message = str(error["message"])
+        lowered = message.lower()
+        quota_exceeded = any(
+            item in lowered
+            for item in (
+                "quota",
+                "rate limit",
+                "resource_exhausted",
+                "billing",
+            )
+        )
+        if quota_exceeded:
+            message = (
+                "Gemini API kvotasi tugagan yoki billing yoqilmagan. "
+                "Google AI Studio'da billing/limitni tekshiring yoki "
+                "Railway Variables'ga OPENAI_API_KEY qo'shing."
+            )
+        return AIServiceError(message, quota_exceeded=quota_exceeded)
 
     def _parse_gemini_text(
         self,
@@ -284,10 +322,18 @@ class AIService:
         instructions: str,
     ) -> bytes:
         if self.active_provider == "gemini":
-            return await self._generate_gemini_image(
-                prompt=prompt,
-                instructions=instructions,
-            )
+            try:
+                return await self._generate_gemini_image(
+                    prompt=prompt,
+                    instructions=instructions,
+                )
+            except AIServiceError:
+                if not self._can_fallback_to_openai:
+                    raise
+                return await self._generate_openai_image(
+                    prompt=prompt,
+                    instructions=instructions,
+                )
         if self.active_provider == "openai":
             return await self._generate_openai_image(
                 prompt=prompt,
@@ -361,7 +407,7 @@ class AIService:
             ) as response:
                 data = await response.json(content_type=None)
                 if response.status >= 400:
-                    raise AIServiceError(self._gemini_error(data))
+                    raise self._gemini_error(data)
         image = self._parse_gemini_image(data)
         if not image:
             raise AIServiceError("Gemini rasm qaytarmadi")

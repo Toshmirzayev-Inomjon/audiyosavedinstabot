@@ -91,6 +91,8 @@ PREMIUM_AI_DAILY_LIMIT=100
 `AI_PROVIDER=auto` bo'lsa `GEMINI_API_KEY` mavjud paytda Gemini ishlaydi.
 OpenAI ishlatmoqchi bo'lsangiz `OPENAI_API_KEY`, `OPENAI_MODEL` va
 `OPENAI_IMAGE_MODEL` qiymatlarini ham berishingiz mumkin.
+Gemini kvotasi yoki billing limiti tugasa, auto rejimda OpenAI kaliti mavjud
+bo'lsa bot avtomatik OpenAI'ga o'tadi.
 
 Bitta AI kaliti barcha AI servislariga ishlatiladi. Bepul tarifda faqat
 MP3/musiqa yuklash ochiq. Standard tarif katalogning taxminan yarmiga, Premium
