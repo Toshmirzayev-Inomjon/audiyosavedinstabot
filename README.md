@@ -61,6 +61,8 @@ DAILY_FREE_LIMIT=3
 PREMIUM_STARS=100
 TARIFF_STANDARD_PRICE=25000
 TARIFF_PREMIUM_PRICE=50000
+TARIFF_STANDARD_STARS=25
+TARIFF_PREMIUM_STARS=50
 TARIFF_STANDARD_DAILY_LIMIT=15
 TARIFF_PERIOD_DAYS=30
 REFERRAL_REWARD=5000
@@ -82,7 +84,7 @@ Promo kod yaratish:
 Foydalanuvchi promo kodni `/promo KOD`, referral linkini `/referral`, tarixni
 `/history`, tariflarni `/tarif`, Stars Premium obunani `/premium` orqali
 boshqaradi. Bepul tarif bir marta 30 kunga beriladi. Standard va Premium
-tariflari botning ichki balansidan sotib olinadi.
+tariflarini botning ichki balansi yoki Telegram Stars bilan sotib olish mumkin.
 
 ## Profil WebApp va xavfsizlik
 

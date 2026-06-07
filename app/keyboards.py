@@ -109,13 +109,19 @@ def tariff_keyboard(
     )
 
 
-def tariff_confirm_keyboard(plan_code: str) -> InlineKeyboardMarkup:
+def tariff_confirm_keyboard(plan_code: str, stars: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="✅ Balansdan sotib olish",
+                    text="💰 Balansdan to'lash",
                     callback_data=f"tariff_buy:{plan_code}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"⭐ {stars} Stars bilan to'lash",
+                    callback_data=f"tariff_stars:{plan_code}",
                 )
             ],
             [

@@ -1508,7 +1508,7 @@ WEBAPP_HTML = """<!doctype html>
           (paymentsData.payments || []).slice(0, 10).map(payment => `
             <article class="account">
               <div class="account-main"><div class="account-logo">★</div><div>
-                <strong>${payment.stars} Stars · ${money(payment.credits)}</strong>
+                <strong>${payment.stars} Stars${payment.credits ? " · " + money(payment.credits) : ""}</strong>
                 <span class="account-number">${payment.user_id} · ${escapeHtml(payment.status)}</span>
               </div></div>
             </article>`).join("");

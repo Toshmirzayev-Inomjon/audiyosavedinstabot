@@ -1,7 +1,11 @@
 from pathlib import Path
 
 from app.config import Settings
-from app.handlers import custom_credits, parse_payment_payload
+from app.handlers import (
+    _parse_tariff_stars_payload,
+    custom_credits,
+    parse_payment_payload,
+)
 
 
 def settings(tmp_path: Path) -> Settings:
@@ -51,6 +55,23 @@ def test_custom_payment_payload(tmp_path: Path) -> None:
         total_amount=7,
         settings=app_settings,
     ) == (True, 7, 7000)
+
+
+def test_tariff_stars_payment_payload(tmp_path: Path) -> None:
+    app_settings = settings(tmp_path)
+
+    assert _parse_tariff_stars_payload(
+        "tariff_stars:standard:25",
+        currency="XTR",
+        total_amount=25,
+        settings=app_settings,
+    ) == (True, "standard", 25)
+    assert _parse_tariff_stars_payload(
+        "tariff_stars:premium:999",
+        currency="XTR",
+        total_amount=999,
+        settings=app_settings,
+    )[0] is False
 
 
 def test_rejects_small_or_tampered_custom_payment(tmp_path: Path) -> None:

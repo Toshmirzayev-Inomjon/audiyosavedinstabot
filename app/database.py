@@ -151,6 +151,16 @@ CREATE TABLE IF NOT EXISTS tariff_purchases (
 CREATE INDEX IF NOT EXISTS idx_tariff_purchases_user_id
 ON tariff_purchases(user_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS tariff_star_payments (
+    charge_id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    plan_code TEXT NOT NULL,
+    stars INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(user_id)
+);
+
 CREATE TABLE IF NOT EXISTS referrals (
     invitee_id INTEGER PRIMARY KEY,
     inviter_id INTEGER NOT NULL,
@@ -1102,6 +1112,118 @@ class Database:
             return standard_limit
         return free_limit
 
+    async def activate_tariff_with_stars(
+        self,
+        user_id: int,
+        *,
+        plan_code: str,
+        stars: int,
+        charge_id: str,
+        period_seconds: int,
+    ) -> TariffPurchaseResult:
+        if plan_code not in {"standard", "premium"}:
+            raise ValueError("Stars tarifi noto'g'ri")
+        if stars <= 0 or period_seconds <= 0 or not charge_id:
+            raise ValueError("Stars to'lovi noto'g'ri")
+        now = int(time.time())
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "INSERT OR IGNORE INTO users (user_id, balance) VALUES (?, 0)",
+                (user_id,),
+            )
+            user_row = db.execute(
+                "SELECT balance FROM users WHERE user_id = ?"
+                + (" FOR UPDATE" if self.postgres else ""),
+                (user_id,),
+            ).fetchone()
+            balance = int(user_row[0]) if user_row else 0
+            duplicate = db.execute(
+                "SELECT expires_at FROM tariff_star_payments WHERE charge_id = ?",
+                (charge_id,),
+            ).fetchone()
+            if duplicate:
+                return TariffPurchaseResult(
+                    False,
+                    "duplicate",
+                    balance,
+                    int(duplicate[0]),
+                )
+            membership = db.execute(
+                "SELECT plan_code, expires_at FROM tariff_memberships "
+                "WHERE user_id = ?"
+                + (" FOR UPDATE" if self.postgres else ""),
+                (user_id,),
+            ).fetchone()
+            plan_rank = {"free": 0, "standard": 1, "premium": 2}
+            effective_plan = plan_code
+            if (
+                membership
+                and int(membership[1]) > now
+                and plan_rank.get(str(membership[0]), 0) > plan_rank[plan_code]
+            ):
+                effective_plan = str(membership[0])
+            current_expiry = int(membership[1]) if membership else 0
+            subscription = db.execute(
+                """
+                SELECT expires_at FROM subscriptions
+                WHERE user_id = ? AND status = 'active' AND expires_at > ?
+                """,
+                (user_id, now),
+            ).fetchone()
+            if subscription:
+                current_expiry = max(current_expiry, int(subscription[0]))
+                if plan_code == "standard" and effective_plan != "premium":
+                    effective_plan = "standard"
+            expires_at = max(now, current_expiry) + period_seconds
+            inserted = db.execute(
+                """
+                INSERT INTO tariff_star_payments
+                    (charge_id, user_id, plan_code, stars, expires_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(charge_id) DO NOTHING
+                """,
+                (charge_id, user_id, plan_code, stars, expires_at),
+            )
+            if inserted.rowcount == 0:
+                existing = db.execute(
+                    "SELECT expires_at FROM tariff_star_payments "
+                    "WHERE charge_id = ?",
+                    (charge_id,),
+                ).fetchone()
+                return TariffPurchaseResult(
+                    False,
+                    "duplicate",
+                    balance,
+                    int(existing[0]) if existing else None,
+                )
+            db.execute(
+                """
+                INSERT INTO tariff_memberships
+                    (user_id, plan_code, expires_at, free_claimed)
+                VALUES (?, ?, ?, 0)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    plan_code = excluded.plan_code,
+                    expires_at = excluded.expires_at,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (user_id, effective_plan, expires_at),
+            )
+            db.execute(
+                """
+                INSERT INTO tariff_purchases
+                    (user_id, plan_code, price, expires_at)
+                VALUES (?, ?, 0, ?)
+                """,
+                (user_id, plan_code, expires_at),
+            )
+            return TariffPurchaseResult(
+                True,
+                "stars",
+                balance,
+                expires_at,
+            )
+
     async def activate_premium(
         self,
         user_id: int,
@@ -1574,7 +1696,16 @@ class Database:
             rows = db.execute(
                 """
                 SELECT user_id, stars, credits, status, external_id, created_at
-                FROM star_payments ORDER BY id DESC LIMIT ?
+                FROM (
+                    SELECT user_id, stars, credits, status, external_id, created_at
+                    FROM star_payments
+                    UNION ALL
+                    SELECT user_id, stars, 0 AS credits,
+                           'tariff:' || plan_code AS status,
+                           charge_id AS external_id, created_at
+                    FROM tariff_star_payments
+                ) AS payments
+                ORDER BY created_at DESC LIMIT ?
                 """,
                 (limit,),
             ).fetchall()

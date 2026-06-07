@@ -118,6 +118,34 @@ def _tariff_price(plan_code: str, settings: Settings) -> int:
     }[plan_code]
 
 
+def _tariff_stars(plan_code: str, settings: Settings) -> int:
+    return {
+        "standard": settings.tariff_standard_stars,
+        "premium": settings.tariff_premium_stars,
+    }[plan_code]
+
+
+def _parse_tariff_stars_payload(
+    payload: str,
+    *,
+    currency: str,
+    total_amount: int,
+    settings: Settings,
+) -> tuple[bool, str, int]:
+    parts = payload.split(":")
+    if len(parts) != 3 or parts[0] != "tariff_stars" or currency != "XTR":
+        return False, "", 0
+    plan_code = parts[1]
+    if plan_code not in {"standard", "premium"}:
+        return False, "", 0
+    try:
+        stars = int(parts[2])
+    except ValueError:
+        return False, "", 0
+    valid = stars == _tariff_stars(plan_code, settings) == total_amount
+    return valid, plan_code, stars
+
+
 def _tariff_catalog_text(settings: Settings) -> str:
     return (
         "📋 <b>Tarifni tanlang</b>\n\n"
@@ -126,13 +154,15 @@ def _tariff_catalog_text(settings: Settings) -> str:
         f"⚡ <b>Standard</b> — "
         f"{format_money(settings.tariff_standard_price)} / "
         f"{settings.tariff_period_days} kun\n"
+        f"Yoki {settings.tariff_standard_stars} Telegram Stars.\n"
         f"Kuniga {settings.tariff_standard_daily_limit} ta yuklash, "
         "720p gacha.\n\n"
         f"💎 <b>Premium</b> — "
         f"{format_money(settings.tariff_premium_price)} / "
         f"{settings.tariff_period_days} kun\n"
+        f"Yoki {settings.tariff_premium_stars} Telegram Stars.\n"
         "Limitsiz yuklash va 1080p.\n\n"
-        "Pullik tarif narxi botdagi ichki balansdan yechiladi."
+        "Pullik tarifni ichki balans yoki Telegram Stars bilan to'lash mumkin."
     )
 
 
@@ -595,10 +625,14 @@ def build_router(services: Services) -> Router:
         await callback.message.answer(
             f"{_tariff_name(plan_code)} tarif: "
             f"<b>{format_money(price)}</b>\n"
+            f"Stars narxi: <b>{_tariff_stars(plan_code, settings)} ⭐</b>\n"
             f"Muddat: <b>{settings.tariff_period_days} kun</b>\n"
             f"Balansingiz: <b>{format_money(balance)}</b>\n\n"
-            "Xaridni tasdiqlaysizmi?",
-            reply_markup=tariff_confirm_keyboard(plan_code),
+            "To'lov usulini tanlang:",
+            reply_markup=tariff_confirm_keyboard(
+                plan_code,
+                _tariff_stars(plan_code, settings),
+            ),
         )
         await callback.answer()
 
@@ -652,6 +686,41 @@ def build_router(services: Services) -> Router:
                     await database.get_language(callback.from_user.id)
                 ),
             )
+        await callback.answer()
+
+    @router.callback_query(F.data.startswith("tariff_stars:"))
+    async def tariff_stars_callback(callback: CallbackQuery, bot: Bot) -> None:
+        if not callback.data:
+            return
+        plan_code = callback.data.split(":", maxsplit=1)[1]
+        if plan_code not in {"standard", "premium"}:
+            await callback.answer("Tarif noto'g'ri", show_alert=True)
+            return
+        active = await database.get_active_tariff(callback.from_user.id)
+        if active and active.plan_code == "premium" and plan_code == "standard":
+            await callback.answer(
+                "Premium faol paytda Standard tarifga o'tib bo'lmaydi.",
+                show_alert=True,
+            )
+            return
+        stars = _tariff_stars(plan_code, settings)
+        await bot.send_invoice(
+            chat_id=callback.from_user.id,
+            title=f"{_tariff_name(plan_code)} tarif",
+            description=(
+                f"{settings.tariff_period_days} kunlik "
+                f"{_tariff_name(plan_code)} tarif"
+            ),
+            payload=f"tariff_stars:{plan_code}:{stars}",
+            provider_token="",
+            currency="XTR",
+            prices=[
+                LabeledPrice(
+                    label=f"{_tariff_name(plan_code)} tarif",
+                    amount=stars,
+                )
+            ],
+        )
         await callback.answer()
 
     @router.message(F.text.in_(LANGUAGE_LABELS | {"Til / Language"}))
@@ -868,7 +937,23 @@ def build_router(services: Services) -> Router:
 
     @router.pre_checkout_query()
     async def pre_checkout_handler(query: PreCheckoutQuery) -> None:
-        valid = (
+        tariff_valid, tariff_plan, _tariff_stars_amount = (
+            _parse_tariff_stars_payload(
+                query.invoice_payload,
+                currency=query.currency,
+                total_amount=query.total_amount,
+                settings=settings,
+            )
+        )
+        if tariff_valid:
+            active = await database.get_active_tariff(query.from_user.id)
+            if active and active.plan_code == "premium" and tariff_plan == "standard":
+                await query.answer(
+                    ok=False,
+                    error_message="Premium faol paytda Standard tarif olinmaydi.",
+                )
+                return
+        valid = tariff_valid or (
             query.currency == "XTR"
             and query.total_amount == settings.premium_stars
             and query.invoice_payload == f"premium:{settings.premium_stars}"
@@ -889,6 +974,41 @@ def build_router(services: Services) -> Router:
     async def successful_payment_handler(message: Message) -> None:
         payment = message.successful_payment
         if not payment or not message.from_user:
+            return
+        tariff_valid, tariff_plan, tariff_stars = _parse_tariff_stars_payload(
+            payment.invoice_payload,
+            currency=payment.currency,
+            total_amount=payment.total_amount,
+            settings=settings,
+        )
+        if tariff_valid:
+            status = await _show_payment_processing(message)
+            result = await database.activate_tariff_with_stars(
+                message.from_user.id,
+                plan_code=tariff_plan,
+                stars=tariff_stars,
+                charge_id=payment.telegram_payment_charge_id,
+                period_seconds=_tariff_period_seconds(settings),
+            )
+            if result.expires_at:
+                expiry = datetime.fromtimestamp(
+                    result.expires_at,
+                    UTC,
+                ).strftime("%Y-%m-%d")
+                text = (
+                    f"✅ {_tariff_name(tariff_plan)} tarif Stars orqali "
+                    f"faollashtirildi.\nAmal qilish muddati: <b>{expiry}</b>"
+                    if result.success
+                    else "Bu Stars to'lovi oldin qayta ishlangan. "
+                    f"Tarif muddati: <b>{expiry}</b>"
+                )
+                await _update_status(status, text)
+            await message.answer(
+                "Menyu:",
+                reply_markup=main_keyboard(
+                    await database.get_language(message.from_user.id)
+                ),
+            )
             return
         if (
             payment.invoice_payload == f"premium:{settings.premium_stars}"

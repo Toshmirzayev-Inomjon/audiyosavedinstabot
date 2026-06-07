@@ -196,6 +196,55 @@ async def test_free_and_paid_tariffs_are_persistent_and_idempotent(
 
 
 @pytest.mark.asyncio
+async def test_tariff_stars_payment_is_idempotent(tmp_path: Path) -> None:
+    database = Database(tmp_path / "test.sqlite3")
+    await database.initialize()
+    await database.ensure_user(10, "user", "Test User")
+
+    first = await database.activate_tariff_with_stars(
+        10,
+        plan_code="standard",
+        stars=25,
+        charge_id="tariff-stars-1",
+        period_seconds=2_592_000,
+    )
+    assert first.success is True
+    assert first.expires_at is not None
+    active = await database.get_active_tariff(10)
+    assert active is not None
+    assert active.plan_code == "standard"
+
+    duplicate = await database.activate_tariff_with_stars(
+        10,
+        plan_code="standard",
+        stars=25,
+        charge_id="tariff-stars-1",
+        period_seconds=2_592_000,
+    )
+    assert duplicate.success is False
+    assert duplicate.reason == "duplicate"
+    assert duplicate.expires_at == first.expires_at
+
+    premium = await database.activate_tariff_with_stars(
+        10,
+        plan_code="premium",
+        stars=50,
+        charge_id="tariff-stars-2",
+        period_seconds=2_592_000,
+    )
+    assert premium.success is True
+    upgraded = await database.get_active_tariff(10)
+    assert upgraded is not None
+    assert upgraded.plan_code == "premium"
+    assert await database.get_balance(10) == 0
+    payments = await database.admin_payments()
+    assert any(
+        payment["stars"] == 50 and payment["status"] == "tariff:premium"
+        for payment in payments
+    )
+
+
+@pytest.mark.asyncio
 async def test_referral_promo_premium_limit_and_history(tmp_path: Path) -> None:
     database = Database(tmp_path / "test.sqlite3")
     await database.initialize()

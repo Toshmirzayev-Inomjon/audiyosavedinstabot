@@ -105,6 +105,8 @@ class Settings:
     public_file_ttl_seconds: int = 3_600
     tariff_standard_price: int = 25_000
     tariff_premium_price: int = 50_000
+    tariff_standard_stars: int = 25
+    tariff_premium_stars: int = 50
     tariff_standard_daily_limit: int = 15
     tariff_period_days: int = 30
 
@@ -180,6 +182,8 @@ class Settings:
             public_file_ttl_seconds=_as_int("PUBLIC_FILE_TTL_SECONDS", 3_600),
             tariff_standard_price=_as_int("TARIFF_STANDARD_PRICE", 25_000),
             tariff_premium_price=_as_int("TARIFF_PREMIUM_PRICE", 50_000),
+            tariff_standard_stars=_as_int("TARIFF_STANDARD_STARS", 25),
+            tariff_premium_stars=_as_int("TARIFF_PREMIUM_STARS", 50),
             tariff_standard_daily_limit=_as_int(
                 "TARIFF_STANDARD_DAILY_LIMIT",
                 15,
@@ -202,6 +206,8 @@ class Settings:
             or settings.public_file_ttl_seconds <= 0
             or settings.tariff_standard_price <= 0
             or settings.tariff_premium_price <= 0
+            or settings.tariff_standard_stars <= 0
+            or settings.tariff_premium_stars <= 0
             or settings.tariff_standard_daily_limit <= 0
             or settings.tariff_period_days <= 0
         ):
