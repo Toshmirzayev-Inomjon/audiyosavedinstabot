@@ -109,9 +109,13 @@ class Settings:
     tariff_premium_stars: int = 50
     tariff_standard_daily_limit: int = 15
     tariff_period_days: int = 30
+    ai_provider: str = "auto"
     openai_api_key: str | None = None
     openai_model: str = "gpt-5.5"
     openai_image_model: str = "gpt-image-1.5"
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-flash-latest"
+    gemini_image_model: str = "gemini-2.5-flash-image"
     standard_ai_daily_limit: int = 20
     premium_ai_daily_limit: int = 100
 
@@ -194,11 +198,18 @@ class Settings:
                 15,
             ),
             tariff_period_days=_as_int("TARIFF_PERIOD_DAYS", 30),
+            ai_provider=os.getenv("AI_PROVIDER", "auto").strip().lower(),
             openai_api_key=os.getenv("OPENAI_API_KEY", "").strip() or None,
             openai_model=os.getenv("OPENAI_MODEL", "gpt-5.5").strip(),
             openai_image_model=os.getenv(
                 "OPENAI_IMAGE_MODEL",
                 "gpt-image-1.5",
+            ).strip(),
+            gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip() or None,
+            gemini_model=os.getenv("GEMINI_MODEL", "gemini-flash-latest").strip(),
+            gemini_image_model=os.getenv(
+                "GEMINI_IMAGE_MODEL",
+                "gemini-2.5-flash-image",
             ).strip(),
             standard_ai_daily_limit=_as_int("STANDARD_AI_DAILY_LIMIT", 20),
             premium_ai_daily_limit=_as_int("PREMIUM_AI_DAILY_LIMIT", 100),
@@ -227,8 +238,15 @@ class Settings:
             raise ValueError("Limit va Premium sozlamalari musbat bo'lishi kerak")
         if settings.bot_api_local and not settings.bot_api_base:
             raise ValueError("BOT_API_LOCAL=true bo'lsa BOT_API_BASE berilishi kerak")
-        if not settings.openai_model or not settings.openai_image_model:
-            raise ValueError("OpenAI model nomlari bo'sh bo'lishi mumkin emas")
+        if settings.ai_provider not in {"auto", "openai", "gemini"}:
+            raise ValueError("AI_PROVIDER auto, openai yoki gemini bo'lishi kerak")
+        if (
+            not settings.openai_model
+            or not settings.openai_image_model
+            or not settings.gemini_model
+            or not settings.gemini_image_model
+        ):
+            raise ValueError("AI model nomlari bo'sh bo'lishi mumkin emas")
         if (
             settings.standard_ai_daily_limit <= 0
             or settings.premium_ai_daily_limit <= 0

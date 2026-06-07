@@ -483,7 +483,7 @@ async def execute_service_handler(request: web.Request) -> web.Response:
     services = request.app["services"]
     if not services.ai.configured:
         raise web.HTTPServiceUnavailable(
-            text="OPENAI_API_KEY Railway Variables bo'limida sozlanmagan."
+            text="AI kaliti Railway Variables bo'limida sozlanmagan."
         )
     settings: Settings = request.app["settings"]
     ai_limit = (
@@ -1880,7 +1880,7 @@ WEBAPP_HTML = """<!doctype html>
       if (!item.ready) {
         notice.textContent = item.configured
           ? "Bu servis uchun tashqi integratsiya tayyorlanmoqda."
-          : "AI xizmatlari uchun serverda OPENAI_API_KEY sozlanishi kerak.";
+          : "AI xizmatlari uchun serverda GEMINI_API_KEY yoki OPENAI_API_KEY sozlanishi kerak.";
         button.disabled = true;
       } else {
         notice.textContent = item.mode === "ai_web"

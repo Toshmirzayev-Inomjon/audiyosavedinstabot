@@ -81,9 +81,13 @@ async def run() -> None:
         telegram=telegram,
         jobs=JobManager(settings.queue_concurrency),
         ai=AIService(
-            api_key=settings.openai_api_key,
-            model=settings.openai_model,
-            image_model=settings.openai_image_model,
+            provider=settings.ai_provider,
+            openai_api_key=settings.openai_api_key,
+            openai_model=settings.openai_model,
+            openai_image_model=settings.openai_image_model,
+            gemini_api_key=settings.gemini_api_key,
+            gemini_model=settings.gemini_model,
+            gemini_image_model=settings.gemini_image_model,
         ),
     )
 

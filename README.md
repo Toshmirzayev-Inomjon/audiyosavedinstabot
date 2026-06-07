@@ -22,7 +22,7 @@ Bot quyidagilarni bajaradi:
 - O'zbek, rus va ingliz tilidagi asosiy menyu
 - Mini App orqali yuklash, tarix, profil, balans va admin panel
 - Mini App ichida 10 kategoriya va 100 ta tartibli servis katalogi
-- Bitta `OPENAI_API_KEY` orqali AI Chat, AI+Web va AI Image xizmatlari
+- Bitta AI kaliti orqali AI Chat, AI+Web va AI Image xizmatlari
 - Admin orqali `/addbalance USER_ID SUMMA` komandasi
 - Telegram WebApp orqali profil, telefon tasdiqlash kodi va ichki virtual hisoblar
 
@@ -77,17 +77,22 @@ natija `/files/<token>` vaqtinchalik HTTPS havolasi orqali beriladi. Railway
 redeploy vaqtida ephemeral fayl o'chishi mumkin, shuning uchun katta fayl
 havolasi uzoq muddatli saqlash emas.
 
-AI xizmatlari uchun Railway `Variables` bo'limiga:
+AI xizmatlari uchun Railway `Variables` bo'limiga Gemini kalitini kiriting:
 
 ```env
-OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-5.5
-OPENAI_IMAGE_MODEL=gpt-image-1.5
+AI_PROVIDER=auto
+GEMINI_API_KEY=...
+GEMINI_MODEL=gemini-flash-latest
+GEMINI_IMAGE_MODEL=gemini-2.5-flash-image
 STANDARD_AI_DAILY_LIMIT=20
 PREMIUM_AI_DAILY_LIMIT=100
 ```
 
-Bitta `OPENAI_API_KEY` barcha AI servislariga ishlatiladi. Bepul tarifda faqat
+`AI_PROVIDER=auto` bo'lsa `GEMINI_API_KEY` mavjud paytda Gemini ishlaydi.
+OpenAI ishlatmoqchi bo'lsangiz `OPENAI_API_KEY`, `OPENAI_MODEL` va
+`OPENAI_IMAGE_MODEL` qiymatlarini ham berishingiz mumkin.
+
+Bitta AI kaliti barcha AI servislariga ishlatiladi. Bepul tarifda faqat
 MP3/musiqa yuklash ochiq. Standard tarif katalogning taxminan yarmiga, Premium
 esa barcha xavfsiz va integratsiyasi tayyor servislarga ruxsat beradi. Tashqi
 fayl konverteri yoki alohida provayder talab qiladigan servislar katalogda
