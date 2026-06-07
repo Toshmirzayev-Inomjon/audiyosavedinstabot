@@ -17,6 +17,42 @@ def _service() -> AIService:
     )
 
 
+def _local_service() -> AIService:
+    return AIService(
+        provider="local",
+        openai_api_key=None,
+        openai_model="openai-text",
+        openai_image_model="openai-image",
+        gemini_api_key=None,
+        gemini_model="gemini-text",
+        gemini_image_model="gemini-image",
+    )
+
+
+@pytest.mark.asyncio
+async def test_local_provider_answers_without_api_key() -> None:
+    service = _local_service()
+
+    result = await service.respond(
+        user_input="salom bot",
+        instructions="Foydali javob bering",
+    )
+
+    assert service.active_provider == "local"
+    assert service.configured is True
+    assert "Lokal AI rejimi" in result.text
+
+
+@pytest.mark.asyncio
+async def test_local_provider_generates_image_without_api_key() -> None:
+    image = await _local_service().generate_image(
+        prompt="Bot uchun chiroyli logo",
+        instructions="Oddiy rasm yarating",
+    )
+
+    assert image.startswith(b"\x89PNG")
+
+
 def test_gemini_text_and_sources_are_parsed() -> None:
     text, sources = _service()._parse_gemini_text(
         {

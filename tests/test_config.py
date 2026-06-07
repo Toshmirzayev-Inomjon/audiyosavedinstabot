@@ -78,6 +78,17 @@ def test_openai_uses_one_api_key_for_ai_services(monkeypatch, tmp_path) -> None:
     assert _ai_service(settings).active_provider == "openai"
 
 
+def test_auto_ai_provider_uses_local_without_api_keys(monkeypatch, tmp_path) -> None:
+    _required_env(monkeypatch)
+    monkeypatch.setenv("APP_ROOT", str(tmp_path))
+
+    settings = Settings.load(tmp_path / "empty.env")
+    service = _ai_service(settings)
+
+    assert service.active_provider == "local"
+    assert service.configured is True
+
+
 def test_gemini_key_is_used_by_auto_ai_provider(monkeypatch, tmp_path) -> None:
     _required_env(monkeypatch)
     monkeypatch.setenv("APP_ROOT", str(tmp_path))

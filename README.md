@@ -77,11 +77,12 @@ natija `/files/<token>` vaqtinchalik HTTPS havolasi orqali beriladi. Railway
 redeploy vaqtida ephemeral fayl o'chishi mumkin, shuning uchun katta fayl
 havolasi uzoq muddatli saqlash emas.
 
-AI xizmatlari uchun Railway `Variables` bo'limiga Gemini kalitini kiriting:
+AI xizmatlari API kalitisiz ham lokal fallback bilan ishlaydi. Kuchliroq AI
+kerak bo'lsa Railway `Variables` bo'limiga Gemini yoki OpenAI kalitini kiriting:
 
 ```env
 AI_PROVIDER=auto
-GEMINI_API_KEY=...
+GEMINI_API_KEY=
 GEMINI_MODEL=gemini-flash-latest
 GEMINI_IMAGE_MODEL=gemini-2.5-flash-image
 STANDARD_AI_DAILY_LIMIT=20
@@ -93,6 +94,9 @@ OpenAI ishlatmoqchi bo'lsangiz `OPENAI_API_KEY`, `OPENAI_MODEL` va
 `OPENAI_IMAGE_MODEL` qiymatlarini ham berishingiz mumkin.
 Gemini kvotasi yoki billing limiti tugasa, auto rejimda OpenAI kaliti mavjud
 bo'lsa bot avtomatik OpenAI'ga o'tadi.
+Hech qanday kalit bo'lmasa `local` rejim ishlaydi: bu real internet qidiruvi
+yoki katta AI modeli emas, lekin matnli servislar va oddiy rasm generatsiyasi
+xato bermasdan javob qaytaradi.
 
 Bitta AI kaliti barcha AI servislariga ishlatiladi. Bepul tarifda faqat
 MP3/musiqa yuklash ochiq. Standard tarif katalogning taxminan yarmiga, Premium

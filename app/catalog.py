@@ -120,7 +120,7 @@ CATALOG = (
         "ai",
         "🤖",
         "Sun'iy intellekt",
-        "Bitta API kaliti bilan AI xizmatlari",
+        "Lokal fallback va tashqi AI xizmatlari",
         "#00c2a8",
         (
             service("ai_chat", "💬", "AI Chat", "Savol-javob, reja va matnlar.", "standard", "ai", "Foydali, aniq va o'zbek tilida javob bering."),

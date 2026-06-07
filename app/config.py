@@ -238,8 +238,10 @@ class Settings:
             raise ValueError("Limit va Premium sozlamalari musbat bo'lishi kerak")
         if settings.bot_api_local and not settings.bot_api_base:
             raise ValueError("BOT_API_LOCAL=true bo'lsa BOT_API_BASE berilishi kerak")
-        if settings.ai_provider not in {"auto", "openai", "gemini"}:
-            raise ValueError("AI_PROVIDER auto, openai yoki gemini bo'lishi kerak")
+        if settings.ai_provider not in {"auto", "openai", "gemini", "local"}:
+            raise ValueError(
+                "AI_PROVIDER auto, openai, gemini yoki local bo'lishi kerak"
+            )
         if (
             not settings.openai_model
             or not settings.openai_image_model

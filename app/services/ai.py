@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import base64
+import io
+import re
+import textwrap
 from dataclasses import dataclass
 from urllib.parse import quote
 
@@ -51,11 +54,13 @@ class AIService:
                 return "gemini"
             if self.openai_api_key:
                 return "openai"
-            return "none"
+            return "local"
         return self.provider
 
     @property
     def configured(self) -> bool:
+        if self.active_provider == "local":
+            return True
         if self.active_provider == "gemini":
             return bool(self.gemini_api_key)
         if self.active_provider == "openai":
@@ -89,6 +94,10 @@ class AIService:
     def _can_fallback_to_openai(self) -> bool:
         return self.provider == "auto" and bool(self.openai_api_key)
 
+    @property
+    def _can_fallback_to_local(self) -> bool:
+        return self.provider == "auto"
+
     async def respond(
         self,
         *,
@@ -107,6 +116,13 @@ class AIService:
                 )
             except AIServiceError:
                 if not self._can_fallback_to_openai:
+                    if self._can_fallback_to_local:
+                        return self._respond_local(
+                            user_input=user_input,
+                            instructions=instructions,
+                            web_search=web_search,
+                            domains=domains,
+                        )
                     raise
                 return await self._respond_openai(
                     user_input=user_input,
@@ -115,13 +131,207 @@ class AIService:
                     domains=domains,
                 )
         if self.active_provider == "openai":
-            return await self._respond_openai(
+            try:
+                return await self._respond_openai(
+                    user_input=user_input,
+                    instructions=instructions,
+                    web_search=web_search,
+                    domains=domains,
+                )
+            except AIServiceError:
+                if not self._can_fallback_to_local:
+                    raise
+                return self._respond_local(
+                    user_input=user_input,
+                    instructions=instructions,
+                    web_search=web_search,
+                    domains=domains,
+                )
+        if self.active_provider == "local":
+            return self._respond_local(
                 user_input=user_input,
                 instructions=instructions,
                 web_search=web_search,
                 domains=domains,
             )
         raise AIServiceError("AI API kaliti serverda sozlanmagan")
+
+    def _respond_local(
+        self,
+        *,
+        user_input: str,
+        instructions: str,
+        web_search: bool,
+        domains: tuple[str, ...],
+    ) -> AIResult:
+        text = self._local_text(user_input, instructions, web_search)
+        sources = (
+            tuple(
+                {
+                    "url": f"https://{domain}",
+                    "title": domain,
+                }
+                for domain in domains[:8]
+            )
+            if domains
+            else ()
+        )
+        return AIResult(text=text, sources=sources)
+
+    def _local_text(
+        self,
+        user_input: str,
+        instructions: str,
+        web_search: bool,
+    ) -> str:
+        value = " ".join(user_input.strip().split())
+        lowered = (instructions + " " + value).lower()
+        header = "Lokal AI rejimi: API kalitisiz soddalashtirilgan javob."
+        if web_search:
+            header += " Jonli internet qidiruvi uchun Gemini yoki OpenAI kaliti kerak."
+
+        if any(word in lowered for word in ("summarizer", "xulosa", "qisqa")):
+            return f"{header}\n\n{self._local_summary(value)}"
+        if any(word in lowered for word in ("grammar", "imlo", "grammatik")):
+            return f"{header}\n\n{self._local_grammar(value)}"
+        if "nickname" in lowered:
+            return f"{header}\n\n{self._local_nicknames(value)}"
+        if any(word in lowered for word in ("brand", "slogan", "brend")):
+            return f"{header}\n\n{self._local_brand(value)}"
+        if any(word in lowered for word in ("math", "tenglama", "misol")):
+            return f"{header}\n\n{self._local_math(value)}"
+        if any(word in lowered for word in ("code", "kod", "xato")):
+            return f"{header}\n\n{self._local_code(value)}"
+        if any(word in lowered for word in ("resume", "cv", "rezyume")):
+            return f"{header}\n\n{self._local_resume(value)}"
+        if any(word in lowered for word in ("translator", "tarjima")):
+            return f"{header}\n\n{self._local_translate(value)}"
+        if any(word in lowered for word in ("quiz", "viktorina")):
+            return f"{header}\n\n{self._local_quiz(value)}"
+        if any(word in lowered for word in ("poem", "she'r", "lyrics")):
+            return f"{header}\n\n{self._local_poem(value)}"
+        return f"{header}\n\n{self._local_general(value)}"
+
+    def _local_summary(self, value: str) -> str:
+        sentences = re.split(r"(?<=[.!?])\s+", value)
+        useful = [sentence.strip() for sentence in sentences if sentence.strip()]
+        if not useful:
+            return "Xulosa qilish uchun matn kiriting."
+        summary = useful[:3]
+        return "Qisqa xulosa:\n" + "\n".join(f"- {item}" for item in summary)
+
+    def _local_grammar(self, value: str) -> str:
+        cleaned = re.sub(r"\s+", " ", value).strip()
+        if cleaned:
+            cleaned = cleaned[0].upper() + cleaned[1:]
+        cleaned = re.sub(r"\s+([,.!?])", r"\1", cleaned)
+        if cleaned and cleaned[-1] not in ".!?":
+            cleaned += "."
+        return (
+            "Tahrirlangan matn:\n"
+            f"{cleaned or 'Matn kiriting.'}\n\n"
+            "Eslatma: lokal rejim chuqur grammatik tahlil qilmaydi."
+        )
+
+    def _local_nicknames(self, value: str) -> str:
+        base = re.sub(r"[^a-zA-Z0-9]+", "", value.title()) or "User"
+        suffixes = ("Pro", "X", "Uz", "Prime", "One", "Wave", "Neo", "Max")
+        names = [f"{base}{suffix}" for suffix in suffixes]
+        return "Nickname variantlari:\n" + "\n".join(f"- {name}" for name in names)
+
+    def _local_brand(self, value: str) -> str:
+        words = [word.capitalize() for word in re.findall(r"[A-Za-z0-9']+", value)]
+        root = words[0] if words else "Nova"
+        ideas = (
+            f"{root}Hub - tezkor va ishonchli xizmatlar markazi",
+            f"{root}Flow - ishni yengillashtiradigan yechim",
+            f"{root}Line - sodda, zamonaviy va aniq brend",
+            f"{root}Pro - premium xizmat va sifat belgisi",
+        )
+        return "Brend g'oyalari:\n" + "\n".join(f"- {idea}" for idea in ideas)
+
+    def _local_math(self, value: str) -> str:
+        expression = value.strip()
+        if not re.fullmatch(r"[0-9+\-*/().,\s]+", expression):
+            return (
+                "Matematik ifoda uchun faqat sonlar va + - * / belgilarini kiriting.\n"
+                "Masalan: (120000 + 80000) / 4"
+            )
+        if "**" in expression or "//" in expression:
+            return "Daraja yoki floor-division lokal rejimda bloklangan."
+        try:
+            result = eval(expression.replace(",", "."), {"__builtins__": {}}, {})
+        except Exception:
+            return "Ifodani hisoblab bo'lmadi. Qavslar va belgilarni tekshiring."
+        return f"Hisob natijasi: {result}"
+
+    def _local_code(self, value: str) -> str:
+        hints: list[str] = []
+        if "traceback" in value.lower() or "error" in value.lower():
+            hints.append("xato stack trace'ning eng pastki qatoridan boshlang")
+        if "none" in value.lower() or "null" in value.lower():
+            hints.append("None/null qiymat kelayotgan joyni tekshiring")
+        if "async" in value.lower():
+            hints.append("await ishlatilgan joylar va event loop oqimini tekshiring")
+        if not hints:
+            hints = [
+                "kiruvchi qiymatlarni validate qiling",
+                "kichik test yozib xatoni takrorlang",
+                "funksiyani alohida qismlarga bo'lib tekshiring",
+            ]
+        return "Kod bo'yicha tezkor tekshiruv:\n" + "\n".join(f"- {hint}" for hint in hints)
+
+    def _local_resume(self, value: str) -> str:
+        return (
+            "CV skeleti:\n"
+            "1. Ism va kontaktlar\n"
+            "2. Qisqa professional summary\n"
+            "3. Tajriba: lavozim, kompaniya, natija\n"
+            "4. Ko'nikmalar\n"
+            "5. Ta'lim va sertifikatlar\n\n"
+            f"Kiritilgan ma'lumot: {value[:500]}"
+        )
+
+    def _local_translate(self, value: str) -> str:
+        return (
+            "Lokal rejimda to'liq tarjima modeli yo'q.\n"
+            "Matnni qisqa bo'laklarga ajrating yoki Gemini/OpenAI kaliti qo'shing.\n\n"
+            f"Kiritilgan matn: {value[:700]}"
+        )
+
+    def _local_quiz(self, value: str) -> str:
+        topic = value or "umumiy bilim"
+        return (
+            f"{topic} bo'yicha mini-test:\n"
+            "1. Asosiy tushuncha nima?\n"
+            "2. Bitta real misol keltiring.\n"
+            "3. Eng muhim qoida qaysi?\n"
+            "4. Qanday xato ko'p uchraydi?\n"
+            "5. Xulosa qilib ayting.\n\n"
+            "Javoblarni foydalanuvchi o'zi yozadi, keyin tekshirish mumkin."
+        )
+
+    def _local_poem(self, value: str) -> str:
+        topic = value or "orzular"
+        return (
+            f"{topic} haqida qisqa she'r:\n"
+            "Yo'l boshida niyat uyg'oq,\n"
+            "Har qadamda umid porlar.\n"
+            "Mehnat bilan ochilar yo'l,\n"
+            "Yurak ishga nur sochar."
+        )
+
+    def _local_general(self, value: str) -> str:
+        if not value:
+            return "Savol yoki mavzu kiriting."
+        return (
+            "Tezkor javob rejasi:\n"
+            f"- Mavzu: {value[:220]}\n"
+            "- Maqsadni aniqlang.\n"
+            "- Kerakli ma'lumotlarni 3-5 bandga ajrating.\n"
+            "- Eng oson bajariladigan birinchi qadamni tanlang.\n"
+            "- Natijani tekshirib, keyingi qadamni belgilang."
+        )
 
     async def _respond_openai(
         self,
@@ -329,13 +539,31 @@ class AIService:
                 )
             except AIServiceError:
                 if not self._can_fallback_to_openai:
+                    if self._can_fallback_to_local:
+                        return self._generate_local_image(
+                            prompt=prompt,
+                            instructions=instructions,
+                        )
                     raise
                 return await self._generate_openai_image(
                     prompt=prompt,
                     instructions=instructions,
                 )
         if self.active_provider == "openai":
-            return await self._generate_openai_image(
+            try:
+                return await self._generate_openai_image(
+                    prompt=prompt,
+                    instructions=instructions,
+                )
+            except AIServiceError:
+                if not self._can_fallback_to_local:
+                    raise
+                return self._generate_local_image(
+                    prompt=prompt,
+                    instructions=instructions,
+                )
+        if self.active_provider == "local":
+            return self._generate_local_image(
                 prompt=prompt,
                 instructions=instructions,
             )
@@ -432,3 +660,55 @@ class AIService:
                 if encoded:
                     return base64.b64decode(str(encoded))
         return None
+
+    def _generate_local_image(
+        self,
+        *,
+        prompt: str,
+        instructions: str,
+    ) -> bytes:
+        from PIL import Image, ImageDraw, ImageFont
+
+        image = Image.new("RGB", (1024, 1024), "#101827")
+        draw = ImageDraw.Draw(image)
+        for y in range(1024):
+            shade = int(18 + y / 1024 * 48)
+            draw.line((0, y, 1024, y), fill=(16, shade, 48 + shade // 2))
+        draw.rounded_rectangle(
+            (82, 110, 942, 914),
+            radius=48,
+            fill=(13, 25, 42),
+            outline=(74, 144, 226),
+            width=4,
+        )
+        draw.ellipse((760, 80, 980, 300), fill=(72, 88, 230))
+        draw.ellipse((40, 760, 260, 980), fill=(0, 194, 168))
+        try:
+            title_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 58)
+            body_font = ImageFont.truetype("DejaVuSans.ttf", 34)
+            small_font = ImageFont.truetype("DejaVuSans.ttf", 24)
+        except OSError:
+            title_font = body_font = small_font = ImageFont.load_default()
+
+        draw.text((130, 160), "Local AI Image", fill="#ffffff", font=title_font)
+        draw.text(
+            (130, 238),
+            "API kalitisiz yaratilgan oddiy rasm",
+            fill="#93c5fd",
+            font=small_font,
+        )
+        text = prompt or instructions or "Mini App"
+        wrapped = textwrap.wrap(text, width=34)[:10]
+        y = 330
+        for line in wrapped:
+            draw.text((130, y), line, fill="#e5e7eb", font=body_font)
+            y += 52
+        draw.text(
+            (130, 845),
+            "Gemini/OpenAI kaliti qo'shilsa haqiqiy AI rasm ishlaydi.",
+            fill="#a7f3d0",
+            font=small_font,
+        )
+        output = io.BytesIO()
+        image.save(output, format="PNG")
+        return output.getvalue()
