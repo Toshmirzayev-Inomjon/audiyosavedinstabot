@@ -1,0 +1,173 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+
+
+class MediaConversionError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class MediaInfo:
+    duration: float
+    width: int
+    height: int
+
+
+class MediaService:
+    @staticmethod
+    def available() -> bool:
+        return bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
+
+    @staticmethod
+    def require_ffmpeg() -> None:
+        if not MediaService.available():
+            raise MediaConversionError(
+                "Serverda ffmpeg topilmadi. Docker orqali ishga tushiring yoki ffmpeg o'rnating."
+            )
+
+    async def probe(self, source: Path) -> MediaInfo:
+        self.require_ffmpeg()
+        process = await asyncio.create_subprocess_exec(
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration:stream=width,height",
+            "-of",
+            "json",
+            str(source),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+        if process.returncode != 0:
+            raise MediaConversionError(
+                f"Media tekshirilmadi: {stderr.decode(errors='replace')[-300:]}"
+            )
+        data = json.loads(stdout)
+        video_stream = next(
+            (
+                stream
+                for stream in data.get("streams", [])
+                if stream.get("width") and stream.get("height")
+            ),
+            {},
+        )
+        return MediaInfo(
+            duration=float(data.get("format", {}).get("duration") or 0),
+            width=int(video_stream.get("width") or 0),
+            height=int(video_stream.get("height") or 0),
+        )
+
+    async def to_mp3(self, source: Path, destination: Path) -> Path:
+        await self._run(
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(source),
+            "-vn",
+            "-codec:a",
+            "libmp3lame",
+            "-q:a",
+            "4",
+            str(destination),
+        )
+        return destination
+
+    async def to_circle(self, source: Path, destination: Path) -> Path:
+        await self._run(
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(source),
+            "-t",
+            "60",
+            "-vf",
+            r"crop=min(iw\,ih):min(iw\,ih),scale=640:640,setsar=1",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "24",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "96k",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            str(destination),
+        )
+        return destination
+
+    async def to_rectangle(
+        self,
+        source: Path,
+        destination: Path,
+        *,
+        from_video_note: bool = False,
+    ) -> Path:
+        if from_video_note:
+            # Video notes are square/circular in Telegram. Cropping the center avoids
+            # black preview corners and Telegram UI-like marks in the rectangular output.
+            filter_graph = (
+                "[0:v]crop=min(iw\\,ih):min(iw\\,ih),crop=iw*0.82:ih*0.82,"
+                "scale=1280:720:force_original_aspect_ratio=increase,"
+                "crop=1280:720,boxblur=24:12[bg];"
+                "[0:v]crop=min(iw\\,ih):min(iw\\,ih),crop=iw*0.82:ih*0.82,"
+                "scale=720:720:force_original_aspect_ratio=decrease[fg];"
+                "[bg][fg]overlay=(W-w)/2:(H-h)/2,format=yuv420p[v]"
+            )
+        else:
+            filter_graph = (
+                "[0:v]scale=1280:720:force_original_aspect_ratio=increase,"
+                "crop=1280:720,boxblur=20:10[bg];"
+                "[0:v]scale=720:720:force_original_aspect_ratio=decrease[fg];"
+                "[bg][fg]overlay=(W-w)/2:(H-h)/2,format=yuv420p[v]"
+            )
+        await self._run(
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(source),
+            "-filter_complex",
+            filter_graph,
+            "-map",
+            "[v]",
+            "-map",
+            "0:a?",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "23",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-shortest",
+            "-movflags",
+            "+faststart",
+            str(destination),
+        )
+        return destination
+
+    async def _run(self, *command: str) -> None:
+        self.require_ffmpeg()
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await process.communicate()
+        if process.returncode != 0:
+            detail = stderr.decode(errors="replace")[-800:]
+            raise MediaConversionError(f"Konvertatsiya bajarilmadi: {detail}")

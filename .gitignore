@@ -1,0 +1,15 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+data/*
+!data/.gitkeep
+tmp/*
+!tmp/.gitkeep
+*.session
+*.session-journal
+cookies.txt
+
