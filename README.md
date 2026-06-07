@@ -8,8 +8,17 @@ Bot quyidagilarni bajaradi:
 - Video/audio yoki havolani MP3 formatiga o'tkazish
 - Videoni Telegram aylana video (`video_note`) formatiga o'tkazish
 - Aylana videoni 16:9 to'rtburchak videoga o'tkazish
-- SQLite balans, tranzaksiya tarixi, haq yechish va xatoda avtomatik refund
+- PostgreSQL/SQLite balans, tranzaksiya tarixi, haq yechish va xatoda refund
 - Telegram Stars orqali balans to'ldirish
+- Telegram Stars orqali 30 kunlik avtomatik Premium obuna
+- 360p, 720p, 1080p va faqat audio sifat tanlash
+- Yuklash navbati, foiz ko'rsatkichi va `/cancel` orqali bekor qilish
+- Yuklash tarixi va Telegram `file_id` orqali qayta yuborish
+- Kunlik bepul limit, promo kod va referral bonuslari
+- PostgreSQL yoki lokal SQLite database
+- Telegram limitidan katta fayl uchun vaqtinchalik HTTPS havola
+- O'zbek, rus va ingliz tilidagi asosiy menyu
+- Mini App orqali yuklash, tarix, profil, balans va admin panel
 - Admin orqali `/addbalance USER_ID SUMMA` komandasi
 - Telegram WebApp orqali profil, telefon tasdiqlash kodi va ichki virtual hisoblar
 
@@ -19,6 +28,53 @@ Stars paketlari `.env` ichidagi `STAR_PACKAGES` orqali boshqariladi. Foydalanuvc
 
 Stars to'lovi kelganda bot avval payment'ni `pending` holatda saqlaydi, 5 soniya
 tekshiruv progressini ko'rsatadi va keyin ichki balansga qo'shadi.
+
+Premium obuna `PREMIUM_STARS` narxida 30 kun ishlaydi va Telegram tomonidan
+avtomatik yangilanadi. Premium foydalanuvchi kunlik limitdan ozod qilinadi va
+1080p sifatni tanlay oladi.
+
+## Railway PostgreSQL
+
+Yangilanishda balans va profil yo'qolmasligi uchun Railway loyihasiga PostgreSQL
+qo'shing:
+
+1. Project ichida `+ Add` -> `Database` -> `PostgreSQL`.
+2. Bot servisining `Variables` bo'limida:
+
+```env
+DATABASE_URL=${{Postgres.DATABASE_URL}}
+```
+
+`Postgres` qismi Railway yaratgan database servisining nomi bilan bir xil bo'lishi
+kerak. `DATABASE_URL` berilsa bot avtomatik PostgreSQL ishlatadi. Berilmasa lokal
+`DATABASE_PATH` bo'yicha SQLite ishlaydi.
+
+Asosiy sozlamalar:
+
+```env
+MAX_DOWNLOAD_MB=500
+TELEGRAM_UPLOAD_MB=49
+QUEUE_CONCURRENCY=2
+DAILY_FREE_LIMIT=3
+PREMIUM_STARS=100
+REFERRAL_REWARD=5000
+REFERRAL_NEW_USER_REWARD=2000
+PUBLIC_FILE_TTL_SECONDS=3600
+```
+
+`MAX_DOWNLOAD_MB` server qayta ishlaydigan hajm. `TELEGRAM_UPLOAD_MB`dan katta
+natija `/files/<token>` vaqtinchalik HTTPS havolasi orqali beriladi. Railway
+redeploy vaqtida ephemeral fayl o'chishi mumkin, shuning uchun katta fayl
+havolasi uzoq muddatli saqlash emas.
+
+Promo kod yaratish:
+
+```text
+/createpromo KOD SUMMA ISHLATISH_LIMITI
+```
+
+Foydalanuvchi promo kodni `/promo KOD`, referral linkini `/referral`, tarixni
+`/history`, Premium obunani `/premium` orqali boshqaradi.
 
 ## Profil WebApp va xavfsizlik
 
@@ -49,9 +105,8 @@ Bu real bank karta/hisob ochmaydi. Real bank karta, karta orqali pul chiqarish y
 Stars'ni avtomatik fiat pulga aylantirish uchun alohida to'lov provayderi, KYC va
 bank integratsiyasi kerak.
 
-Standart sozlamada media davomiyligi 11 soatgacha, lekin Telegramga yuboriladigan
-har bir tayyor fayl 49 MB'dan oshmasligi kerak. Juda uzun videolar hajm limitiga
-sig'masa bot ularni yubora olmaydi.
+Standart sozlamada media davomiyligi 11 soatgacha. Telegramga 49 MB gacha fayl
+yuboriladi, undan katta natijaga vaqtinchalik yuklash havolasi yaratiladi.
 
 ## 2 GB Local Bot API rejimi
 

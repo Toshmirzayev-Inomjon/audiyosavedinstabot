@@ -13,18 +13,110 @@ BALANCE_BUTTON = "💰 Balansim"
 BUY_BUTTON = "⭐ Hisob to'ldirish"
 CANCEL_BUTTON = "❌ Bekor qilish"
 CUSTOM_STARS_BUTTON = "✍️ O'zim kiritaman"
+HISTORY_BUTTON = "🕘 Yuklash tarixi"
+PREMIUM_BUTTON = "💎 Premium"
+LANGUAGE_BUTTON = "🌐 Til / Language"
+
+MENU_LABELS = {
+    "uz": {
+        "video": VIDEO_BUTTON,
+        "mp3": MP3_BUTTON,
+        "circle": CIRCLE_BUTTON,
+        "rectangle": RECTANGLE_BUTTON,
+        "balance": BALANCE_BUTTON,
+        "buy": BUY_BUTTON,
+        "history": HISTORY_BUTTON,
+        "premium": PREMIUM_BUTTON,
+        "language": LANGUAGE_BUTTON,
+        "placeholder": "Quyidagi xizmatlardan birini tanlang",
+    },
+    "ru": {
+        "video": "📥 Скачать видео",
+        "mp3": "🎵 Скачать MP3",
+        "circle": "⭕ Сделать круглое видео",
+        "rectangle": "🖼 Сделать обычное видео",
+        "balance": "💰 Мой баланс",
+        "buy": "⭐ Пополнить баланс",
+        "history": "🕘 История загрузок",
+        "premium": "💎 Премиум",
+        "language": LANGUAGE_BUTTON,
+        "placeholder": "Выберите услугу",
+    },
+    "en": {
+        "video": "📥 Download video",
+        "mp3": "🎵 Download MP3",
+        "circle": "⭕ Make video note",
+        "rectangle": "🖼 Make regular video",
+        "balance": "💰 My balance",
+        "buy": "⭐ Add balance",
+        "history": "🕘 Download history",
+        "premium": "💎 Premium",
+        "language": LANGUAGE_BUTTON,
+        "placeholder": "Choose a service",
+    },
+}
 
 
-def main_keyboard() -> ReplyKeyboardMarkup:
+def main_keyboard(language: str = "uz") -> ReplyKeyboardMarkup:
+    labels = MENU_LABELS.get(language, MENU_LABELS["uz"])
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=VIDEO_BUTTON), KeyboardButton(text=MP3_BUTTON)],
-            [KeyboardButton(text=CIRCLE_BUTTON)],
-            [KeyboardButton(text=RECTANGLE_BUTTON)],
-            [KeyboardButton(text=BALANCE_BUTTON), KeyboardButton(text=BUY_BUTTON)],
+            [KeyboardButton(text=labels["video"]), KeyboardButton(text=labels["mp3"])],
+            [KeyboardButton(text=labels["circle"])],
+            [KeyboardButton(text=labels["rectangle"])],
+            [KeyboardButton(text=labels["balance"]), KeyboardButton(text=labels["buy"])],
+            [
+                KeyboardButton(text=labels["history"]),
+                KeyboardButton(text=labels["premium"]),
+            ],
+            [KeyboardButton(text=labels["language"])],
         ],
         resize_keyboard=True,
-        input_field_placeholder="Quyidagi xizmatlardan birini tanlang",
+        input_field_placeholder=labels["placeholder"],
+    )
+
+
+def quality_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="360p", callback_data="quality:360"),
+                InlineKeyboardButton(text="720p", callback_data="quality:720"),
+                InlineKeyboardButton(text="1080p", callback_data="quality:1080"),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🎵 Faqat audio (MP3)",
+                    callback_data="quality:audio",
+                )
+            ],
+        ]
+    )
+
+
+def language_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🇺🇿 O'zbekcha", callback_data="lang:uz"),
+                InlineKeyboardButton(text="🇷🇺 Русский", callback_data="lang:ru"),
+                InlineKeyboardButton(text="🇬🇧 English", callback_data="lang:en"),
+            ]
+        ]
+    )
+
+
+def history_keyboard(items: list[tuple[int, str]]) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"↻ {title[:35]}",
+                    callback_data=f"history:{download_id}",
+                )
+            ]
+            for download_id, title in items
+        ]
     )
 
 

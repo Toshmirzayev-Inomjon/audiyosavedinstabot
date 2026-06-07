@@ -6,6 +6,32 @@ from app.database import Database
 
 
 @pytest.mark.asyncio
+async def test_balance_and_profile_survive_reinitialize(tmp_path: Path) -> None:
+    path = tmp_path / "persistent.sqlite3"
+    database = Database(path, initial_balance=1_000)
+    await database.initialize()
+    await database.ensure_user(10, "user", "Test User")
+    await database.add_balance(10, 2_000, "credit")
+    await database.upsert_profile(
+        10,
+        first_name="Test",
+        last_name="User",
+        phone="+998901234567",
+    )
+
+    reopened = Database(path, initial_balance=9_999)
+    await reopened.initialize()
+    await reopened.ensure_user(10, "updated", "Updated Name")
+
+    assert await reopened.get_balance(10) == 3_000
+    profile = await reopened.get_profile(10)
+    assert profile is not None
+    assert profile.first_name == "Test"
+    assert profile.last_name == "User"
+    assert profile.phone == "+998901234567"
+
+
+@pytest.mark.asyncio
 async def test_balance_charge_refund_and_idempotent_credit(tmp_path: Path) -> None:
     database = Database(tmp_path / "test.sqlite3", initial_balance=1_000)
     await database.initialize()
@@ -88,3 +114,74 @@ async def test_pending_star_payment_confirm_adds_balance_once(tmp_path: Path) ->
     assert confirmed_again is False
     assert balance_again == 5_000
 
+
+@pytest.mark.asyncio
+async def test_referral_promo_premium_limit_and_history(tmp_path: Path) -> None:
+    database = Database(tmp_path / "test.sqlite3")
+    await database.initialize()
+    await database.ensure_user(10, "inviter", "Inviter")
+    await database.ensure_user(20, "invitee", "Invitee")
+
+    assert await database.apply_referral(
+        20,
+        10,
+        inviter_reward=5_000,
+        invitee_reward=2_000,
+    )
+    assert not await database.apply_referral(
+        20,
+        10,
+        inviter_reward=5_000,
+        invitee_reward=2_000,
+    )
+    assert await database.get_balance(10) == 5_000
+    assert await database.get_balance(20) == 2_000
+
+    await database.create_promo("HELLO", 3_000, 1)
+    redeemed, _message, balance = await database.redeem_promo(20, "hello")
+    assert redeemed is True
+    assert balance == 5_000
+    duplicate, _message, _balance = await database.redeem_promo(20, "HELLO")
+    assert duplicate is False
+
+    allowed, remaining = await database.reserve_daily_use(20, 1)
+    assert allowed is True
+    assert remaining == 0
+    allowed_again, _ = await database.reserve_daily_use(20, 1)
+    assert allowed_again is False
+    await database.release_daily_use(20)
+
+    expires_at = await database.activate_premium(
+        20,
+        stars=100,
+        charge_id="premium-1",
+        period_seconds=60,
+    )
+    assert expires_at > 0
+    assert await database.is_premium(20)
+    duplicate_expiry = await database.activate_premium(
+        20,
+        stars=100,
+        charge_id="premium-1",
+        period_seconds=60,
+    )
+    assert duplicate_expiry == expires_at
+    premium_allowed, premium_remaining = await database.reserve_daily_use(20, 1)
+    assert premium_allowed is True
+    assert premium_remaining == -1
+
+    download_id = await database.create_download(
+        20,
+        source_url="https://youtu.be/test",
+        media_type="video",
+        quality="720",
+    )
+    await database.finish_download(
+        download_id,
+        status="completed",
+        telegram_file_id="file-id",
+        title="Test video",
+    )
+    history = await database.recent_downloads(20)
+    assert history[0].telegram_file_id == "file-id"
+    assert history[0].title == "Test video"

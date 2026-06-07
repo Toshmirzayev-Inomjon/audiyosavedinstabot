@@ -1,6 +1,10 @@
 import pytest
 
-from app.services.downloader import MediaDownloadError, platform_for_url
+from app.services.downloader import (
+    MediaDownloadError,
+    format_for_quality,
+    platform_for_url,
+)
 
 
 @pytest.mark.parametrize(
@@ -30,3 +34,9 @@ def test_rejects_unsupported_or_unsafe_urls(url: str) -> None:
     with pytest.raises(MediaDownloadError):
         platform_for_url(url)
 
+
+def test_quality_format_limits_height() -> None:
+    assert "height<=360" in format_for_quality("360")
+    assert "height<=720" in format_for_quality("720")
+    assert "height<=1080" in format_for_quality("1080")
+    assert format_for_quality("audio", audio=True).startswith("bestaudio")

@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import time
 from urllib.parse import urlencode
 
 import pytest
@@ -8,9 +9,14 @@ import pytest
 from app.webapp import WebAppAuthError, verify_init_data
 
 
-def signed_init_data(bot_token: str, user: dict) -> str:
+def signed_init_data(
+    bot_token: str,
+    user: dict,
+    *,
+    auth_date: int | None = None,
+) -> str:
     values = {
-        "auth_date": "1710000000",
+        "auth_date": str(auth_date or int(time.time())),
         "query_id": "test",
         "user": json.dumps(user, separators=(",", ":")),
     }
@@ -45,3 +51,14 @@ def test_verify_init_data_rejects_tampering() -> None:
     with pytest.raises(WebAppAuthError):
         verify_init_data(tampered, bot_token)
 
+
+def test_verify_init_data_rejects_expired_session() -> None:
+    bot_token = "123:TEST"
+    data = signed_init_data(
+        bot_token,
+        {"id": 42, "first_name": "Ali"},
+        auth_date=int(time.time()) - (25 * 60 * 60),
+    )
+
+    with pytest.raises(WebAppAuthError):
+        verify_init_data(data, bot_token)

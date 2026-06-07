@@ -95,6 +95,14 @@ class Settings:
     webapp_host: str
     webapp_port: int
     phone_code_ttl_seconds: int
+    database_url: str | None = None
+    telegram_upload_mb: int = 49
+    queue_concurrency: int = 2
+    daily_free_limit: int = 3
+    premium_stars: int = 100
+    referral_reward: int = 5_000
+    referral_new_user_reward: int = 2_000
+    public_file_ttl_seconds: int = 3_600
 
     @property
     def max_download_bytes(self) -> int:
@@ -103,6 +111,10 @@ class Settings:
     @property
     def max_duration_seconds(self) -> int:
         return self.max_duration_minutes * 60
+
+    @property
+    def telegram_upload_bytes(self) -> int:
+        return self.telegram_upload_mb * 1024 * 1024
 
     @property
     def telegram_links_enabled(self) -> bool:
@@ -131,7 +143,7 @@ class Settings:
             temp_dir=Path(os.getenv("TEMP_DIR", root / "tmp")).resolve(),
             circle_price=_as_int("CIRCLE_PRICE", 5000),
             initial_balance=_as_int("INITIAL_BALANCE", 0),
-            max_download_mb=_as_int("MAX_DOWNLOAD_MB", 49),
+            max_download_mb=_as_int("MAX_DOWNLOAD_MB", 500),
             max_duration_minutes=_as_int("MAX_DURATION_MINUTES", 660),
             cookies_file=Path(cookies_raw).resolve() if cookies_raw else None,
             telegram_api_id=api_id,
@@ -154,6 +166,14 @@ class Settings:
             webapp_host=os.getenv("WEBAPP_HOST", "0.0.0.0").strip(),
             webapp_port=_webapp_port(),
             phone_code_ttl_seconds=_as_int("PHONE_CODE_TTL_SECONDS", 300),
+            database_url=os.getenv("DATABASE_URL", "").strip() or None,
+            telegram_upload_mb=_as_int("TELEGRAM_UPLOAD_MB", 49),
+            queue_concurrency=_as_int("QUEUE_CONCURRENCY", 2),
+            daily_free_limit=_as_int("DAILY_FREE_LIMIT", 3),
+            premium_stars=_as_int("PREMIUM_STARS", 100),
+            referral_reward=_as_int("REFERRAL_REWARD", 5_000),
+            referral_new_user_reward=_as_int("REFERRAL_NEW_USER_REWARD", 2_000),
+            public_file_ttl_seconds=_as_int("PUBLIC_FILE_TTL_SECONDS", 3_600),
         )
         if settings.circle_price < 0 or settings.initial_balance < 0:
             raise ValueError("Balans va narx manfiy bo'lishi mumkin emas")
@@ -163,6 +183,14 @@ class Settings:
             raise ValueError("Stars sozlamalari musbat bo'lishi kerak")
         if settings.webapp_port <= 0 or settings.phone_code_ttl_seconds <= 0:
             raise ValueError("WebApp sozlamalari musbat bo'lishi kerak")
+        if (
+            settings.telegram_upload_mb <= 0
+            or settings.queue_concurrency <= 0
+            or settings.daily_free_limit <= 0
+            or settings.premium_stars <= 0
+            or settings.public_file_ttl_seconds <= 0
+        ):
+            raise ValueError("Limit va Premium sozlamalari musbat bo'lishi kerak")
         if settings.bot_api_local and not settings.bot_api_base:
             raise ValueError("BOT_API_LOCAL=true bo'lsa BOT_API_BASE berilishi kerak")
         return settings

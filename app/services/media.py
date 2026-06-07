@@ -64,7 +64,13 @@ class MediaService:
             height=int(video_stream.get("height") or 0),
         )
 
-    async def to_mp3(self, source: Path, destination: Path) -> Path:
+    async def to_mp3(
+        self,
+        source: Path,
+        destination: Path,
+        *,
+        cancel_event: asyncio.Event | None = None,
+    ) -> Path:
         await self._run(
             "ffmpeg",
             "-y",
@@ -76,6 +82,7 @@ class MediaService:
             "-q:a",
             "4",
             str(destination),
+            cancel_event=cancel_event,
         )
         return destination
 
@@ -160,14 +167,36 @@ class MediaService:
         )
         return destination
 
-    async def _run(self, *command: str) -> None:
+    async def _run(
+        self,
+        *command: str,
+        cancel_event: asyncio.Event | None = None,
+    ) -> None:
         self.require_ffmpeg()
         process = await asyncio.create_subprocess_exec(
             *command,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await process.communicate()
+        if process.stderr is None:
+            raise MediaConversionError("ffmpeg stderr oqimi ochilmadi")
+        stderr_task = asyncio.create_task(process.stderr.read())
+        while process.returncode is None:
+            try:
+                await asyncio.wait_for(process.wait(), timeout=0.4)
+            except TimeoutError:
+                if cancel_event and cancel_event.is_set():
+                    process.terminate()
+                    try:
+                        await asyncio.wait_for(process.wait(), timeout=3)
+                    except TimeoutError:
+                        process.kill()
+                        await process.wait()
+                    await stderr_task
+                    raise MediaConversionError(
+                        "Konvertatsiya bekor qilindi"
+                    ) from None
+        stderr = await stderr_task
         if process.returncode != 0:
             detail = stderr.decode(errors="replace")[-800:]
             raise MediaConversionError(f"Konvertatsiya bajarilmadi: {detail}")

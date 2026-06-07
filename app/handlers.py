@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import mimetypes
+import secrets
+import shutil
 import tempfile
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from aiogram import Bot, F, Router
@@ -15,6 +19,8 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     CallbackQuery,
     FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
     LabeledPrice,
     Message,
     PreCheckoutQuery,
@@ -22,19 +28,20 @@ from aiogram.types import (
 
 from app.config import Settings
 from app.database import Database
+from app.i18n import text as i18n_text
+from app.jobs import JobCancelled, JobContext, JobManager
 from app.keyboards import (
-    BALANCE_BUTTON,
-    BUY_BUTTON,
     CANCEL_BUTTON,
-    CIRCLE_BUTTON,
-    MP3_BUTTON,
-    RECTANGLE_BUTTON,
-    VIDEO_BUTTON,
+    MENU_LABELS,
     cancel_keyboard,
+    history_keyboard,
+    language_keyboard,
     main_keyboard,
+    quality_keyboard,
     star_packages_keyboard,
 )
 from app.services.downloader import (
+    DownloadCancelled,
     DownloadService,
     MediaDownloadError,
     platform_for_url,
@@ -49,8 +56,19 @@ from app.services.telegram_downloader import (
 
 logger = logging.getLogger(__name__)
 
+VIDEO_LABELS = {labels["video"] for labels in MENU_LABELS.values()}
+MP3_LABELS = {labels["mp3"] for labels in MENU_LABELS.values()}
+CIRCLE_LABELS = {labels["circle"] for labels in MENU_LABELS.values()}
+RECTANGLE_LABELS = {labels["rectangle"] for labels in MENU_LABELS.values()}
+BALANCE_LABELS = {labels["balance"] for labels in MENU_LABELS.values()}
+BUY_LABELS = {labels["buy"] for labels in MENU_LABELS.values()}
+HISTORY_LABELS = {labels["history"] for labels in MENU_LABELS.values()}
+PREMIUM_LABELS = {labels["premium"] for labels in MENU_LABELS.values()}
+LANGUAGE_LABELS = {labels["language"] for labels in MENU_LABELS.values()}
+
 
 class MediaStates(StatesGroup):
+    video_quality = State()
     video_download = State()
     mp3_download = State()
     circle = State()
@@ -65,6 +83,8 @@ class Services:
     downloader: DownloadService
     media: MediaService
     telegram: TelegramDownloadService
+    jobs: JobManager
+    public_base_url: str | None = None
 
 
 def format_money(amount: int) -> str:
@@ -169,12 +189,22 @@ async def _resolve_source(
     *,
     prefer_audio: bool = False,
     allow_audio_upload: bool = True,
+    quality: str = "720",
+    progress=None,
+    cancel_event: asyncio.Event | None = None,
 ) -> Path:
     if message.text and message.text != CANCEL_BUTTON:
         url = _validate_text_url(message.text)
         if is_telegram_url(url):
             return await services.telegram.download(url, directory)
-        return await services.downloader.download(url, directory, audio=prefer_audio)
+        return await services.downloader.download(
+            url,
+            directory,
+            audio=prefer_audio,
+            quality=quality,
+            progress=progress,
+            cancel_event=cancel_event,
+        )
     return await _download_message_media(
         message,
         bot,
@@ -191,6 +221,29 @@ async def _check_output(path: Path, settings: Settings) -> None:
         raise MediaConversionError(
             f"Tayyor fayl {settings.max_download_mb} MB limitdan oshib ketdi"
         )
+
+
+async def _temporary_download_link(
+    path: Path,
+    *,
+    user_id: int,
+    services: Services,
+) -> str:
+    if not services.public_base_url:
+        raise MediaConversionError("Katta fayl uchun public HTTPS manzil topilmadi")
+    public_dir = services.settings.temp_dir / "public"
+    public_dir.mkdir(parents=True, exist_ok=True)
+    destination = public_dir / f"{user_id}-{secrets.token_hex(8)}{path.suffix}"
+    await asyncio.to_thread(shutil.move, path, destination)
+    mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    token = await services.database.create_public_file(
+        user_id,
+        path=str(destination),
+        filename=path.name,
+        mime_type=mime_type,
+        ttl_seconds=services.settings.public_file_ttl_seconds,
+    )
+    return f"{services.public_base_url}/files/{token}"
 
 
 async def _check_duration(source: Path, services: Services) -> None:
@@ -221,7 +274,12 @@ async def _update_status(status: Message, text: str) -> None:
 async def _show_error(message: Message, exc: Exception) -> None:
     if isinstance(
         exc,
-        (MediaDownloadError, MediaConversionError, TelegramDownloadError),
+        (
+            MediaDownloadError,
+            MediaConversionError,
+            TelegramDownloadError,
+            JobCancelled,
+        ),
     ):
         text = str(exc)
     elif isinstance(exc, TelegramAPIError):
@@ -231,6 +289,26 @@ async def _show_error(message: Message, exc: Exception) -> None:
         logger.exception("Unexpected media processing error", exc_info=exc)
         text = "Kutilmagan xato yuz berdi. Birozdan keyin qayta urinib ko'ring."
     await message.answer(f"Xato: {text}\n\nQayta yuboring yoki /cancel ni bosing.")
+
+
+class _ProgressUpdater:
+    def __init__(self, status: Message) -> None:
+        self.status = status
+        self.loop = asyncio.get_running_loop()
+        self.last_percent = -10
+
+    def __call__(self, percent: float, stage: str) -> None:
+        rounded = min(100, max(0, int(percent // 5 * 5)))
+        if rounded < 100 and rounded - self.last_percent < 5:
+            return
+        self.last_percent = rounded
+        blocks = min(10, rounded // 10)
+        bar = "▰" * blocks + "▱" * (10 - blocks)
+        label = "Fayl birlashtirilmoqda" if stage == "processing" else "Yuklanmoqda"
+        text = f"⏳ {label}: {rounded}%\n{bar}\n/cancel - bekor qilish"
+        self.loop.call_soon_threadsafe(
+            lambda: asyncio.create_task(_update_status(self.status, text))
+        )
 
 
 async def _show_payment_processing(message: Message) -> Message:
@@ -251,48 +329,64 @@ def build_router(services: Services) -> Router:
     async def start_handler(message: Message, state: FSMContext) -> None:
         await state.clear()
         await ensure_user(message, database)
+        if message.from_user and message.text:
+            parts = message.text.split(maxsplit=1)
+            if len(parts) == 2 and parts[1].startswith("ref_"):
+                try:
+                    inviter_id = int(parts[1][4:])
+                except ValueError:
+                    inviter_id = 0
+                if inviter_id:
+                    await database.apply_referral(
+                        message.from_user.id,
+                        inviter_id,
+                        inviter_reward=settings.referral_reward,
+                        invitee_reward=settings.referral_new_user_reward,
+                    )
+        language = (
+            await database.get_language(message.from_user.id)
+            if message.from_user
+            else "uz"
+        )
         await message.answer(
-            "<b>Assalomu alaykum!</b>\n\n"
-            "Bu bot quyidagilarni bajaradi:\n"
-            "📥 YouTube va Instagram havolasidan video yuklaydi\n"
-            "🎵 Havola yoki videoni MP3 qiladi\n"
-            "⭕ Oddiy videoni Telegram aylana videosiga aylantiradi\n"
-            "🖼 Aylana videoni 16:9 oddiy videoga aylantiradi\n"
-            "💰 Balans va Telegram Stars orqali to'lovni boshqaradi\n\n"
+            i18n_text(language, "welcome")
+            + "\n\n"
+            f"🎁 Kunlik bepul limit: <b>{settings.daily_free_limit} ta</b>\n"
             f"⭕ Aylana video narxi: <b>{format_money(settings.circle_price)}</b>\n\n"
             f"⏱ Maksimal davomiylik: <b>{settings.max_duration_minutes // 60} soat</b>\n"
-            f"📦 Tayyor fayl hajmi: <b>{settings.max_download_mb} MB gacha</b>\n\n"
-            "<b>Qanday ishlatiladi?</b>\n"
-            "1. Pastdagi kerakli tugmani bosing.\n"
-            "2. Havola yoki media faylni yuboring.\n"
-            "3. Bot tayyor faylni qaytaradi.\n\n"
-            "Telegram videosini botga yuborish yoki forward qilish mumkin.",
-            reply_markup=main_keyboard(),
+            f"📦 Media limiti: <b>{settings.max_download_mb} MB gacha</b>",
+            reply_markup=main_keyboard(language),
         )
 
     @router.message(Command("help"))
     async def help_handler(message: Message) -> None:
         await ensure_user(message, database)
+        language = (
+            await database.get_language(message.from_user.id)
+            if message.from_user
+            else "uz"
+        )
         await message.answer(
-            "<b>Botdan foydalanish:</b>\n\n"
-            "📥 <b>Video yuklab olish</b> - YouTube yoki Instagram havolasini yuboring.\n"
-            "🎵 <b>MP3 yuklab olish</b> - havola, video yoki audio yuboring.\n"
-            "⭕ <b>Videoni aylana qilish</b> - video yuboring; xizmat pullik.\n"
-            "🖼 <b>Aylanani oddiy video qilish</b> - video note yuboring.\n"
-            "💰 <b>Balansim</b> - hisob va oxirgi amallar.\n"
-            "⭐ <b>Hisob to'ldirish</b> - Telegram Stars orqali to'lov.\n\n"
-            "/cancel - boshlangan amalni bekor qilish",
-            reply_markup=main_keyboard(),
+            i18n_text(language, "help"),
+            reply_markup=main_keyboard(language),
         )
 
     @router.message(Command("cancel"))
     @router.message(F.text.in_({CANCEL_BUTTON, "Bekor qilish"}))
     async def cancel_handler(message: Message, state: FSMContext) -> None:
+        cancelled = False
+        if message.from_user:
+            cancelled = await services.jobs.cancel(message.from_user.id)
         await state.clear()
-        await message.answer("Amal bekor qilindi.", reply_markup=main_keyboard())
+        await message.answer(
+            "Aktiv yuklash bekor qilinmoqda."
+            if cancelled
+            else "Amal bekor qilindi.",
+            reply_markup=main_keyboard(),
+        )
 
     @router.message(Command("balance"))
-    @router.message(F.text.in_({BALANCE_BUTTON, "Hisobim"}))
+    @router.message(F.text.in_(BALANCE_LABELS | {"Hisobim"}))
     async def balance_handler(message: Message) -> None:
         await ensure_user(message, database)
         if not message.from_user:
@@ -310,7 +404,7 @@ def build_router(services: Services) -> Router:
         )
 
     @router.message(Command("buy"))
-    @router.message(F.text.in_({BUY_BUTTON, "Hisob to'ldirish"}))
+    @router.message(F.text.in_(BUY_LABELS | {"Hisob to'ldirish"}))
     async def buy_handler(message: Message) -> None:
         await ensure_user(message, database)
         if not settings.star_packages:
@@ -321,6 +415,128 @@ def build_router(services: Services) -> Router:
             f"Minimal custom to'lov: {settings.custom_star_min} Stars.",
             reply_markup=star_packages_keyboard(settings.star_packages),
         )
+
+    @router.message(F.text.in_(LANGUAGE_LABELS | {"Til / Language"}))
+    @router.message(Command("language"))
+    async def language_handler(message: Message) -> None:
+        await ensure_user(message, database)
+        await message.answer(
+            "Tilni tanlang / Выберите язык / Choose language:",
+            reply_markup=language_keyboard(),
+        )
+
+    @router.callback_query(F.data.startswith("lang:"))
+    async def language_callback(callback: CallbackQuery) -> None:
+        if not callback.data:
+            return
+        language = callback.data.split(":", maxsplit=1)[1]
+        if language not in {"uz", "ru", "en"}:
+            await callback.answer("Language error", show_alert=True)
+            return
+        await database.set_language(callback.from_user.id, language)
+        texts = {
+            "uz": "Til o'zbekchaga o'zgartirildi.",
+            "ru": "Язык изменён на русский.",
+            "en": "Language changed to English.",
+        }
+        await callback.message.answer(
+            texts[language],
+            reply_markup=main_keyboard(language),
+        )
+        await callback.answer()
+
+    @router.message(F.text.in_(PREMIUM_LABELS | {"Premium"}))
+    @router.message(Command("premium"))
+    async def premium_handler(message: Message, bot: Bot) -> None:
+        await ensure_user(message, database)
+        if not message.from_user:
+            return
+        until = await database.premium_until(message.from_user.id)
+        if until and until > int(datetime.now(UTC).timestamp()):
+            expiry = datetime.fromtimestamp(until, UTC).strftime("%Y-%m-%d")
+            await message.answer(
+                f"💎 Premium faol.\nAmal qilish muddati: {expiry}",
+                reply_markup=main_keyboard(),
+            )
+            return
+        invoice_url = await bot.create_invoice_link(
+            title="Saved Insta Premium",
+            description=(
+                "Kunlik limitsiz yuklash, ustuvor navbat va 1080p imkoniyati. "
+                "Obuna har 30 kunda avtomatik yangilanadi."
+            ),
+            payload=f"premium:{settings.premium_stars}",
+            provider_token="",
+            currency="XTR",
+            prices=[
+                LabeledPrice(
+                    label="30 kunlik Premium",
+                    amount=settings.premium_stars,
+                )
+            ],
+            subscription_period=30 * 24 * 60 * 60,
+        )
+        await message.answer(
+            "💎 30 kunlik Premium obunani Telegram Stars orqali faollashtiring:",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=f"💎 {settings.premium_stars} Stars bilan olish",
+                            url=invoice_url,
+                        )
+                    ]
+                ]
+            ),
+        )
+
+    @router.message(Command("referral"))
+    async def referral_handler(message: Message, bot: Bot) -> None:
+        await ensure_user(message, database)
+        if not message.from_user:
+            return
+        me = await bot.get_me()
+        count, earned = await database.referral_stats(message.from_user.id)
+        link = f"https://t.me/{me.username}?start=ref_{message.from_user.id}"
+        await message.answer(
+            "🎁 <b>Referral dasturi</b>\n\n"
+            f"Takliflar: {count} ta\n"
+            f"Topilgan bonus: {format_money(earned)}\n\n"
+            f"Do'stlaringizga yuboring:\n<code>{link}</code>"
+        )
+
+    @router.message(Command("promo"))
+    async def promo_handler(message: Message) -> None:
+        await ensure_user(message, database)
+        if not message.from_user:
+            return
+        parts = (message.text or "").split(maxsplit=1)
+        if len(parts) != 2:
+            await message.answer("Format: /promo KOD")
+            return
+        ok, text, balance = await database.redeem_promo(
+            message.from_user.id,
+            parts[1],
+        )
+        suffix = f"\nYangi balans: {format_money(balance)}" if ok else ""
+        await message.answer(text + suffix, reply_markup=main_keyboard())
+
+    @router.message(Command("createpromo"))
+    async def create_promo_handler(message: Message) -> None:
+        if not message.from_user or message.from_user.id not in settings.admin_ids:
+            await message.answer("Bu komanda faqat admin uchun.")
+            return
+        parts = (message.text or "").split()
+        if len(parts) != 4:
+            await message.answer("Format: /createpromo KOD SUMMA LIMIT")
+            return
+        try:
+            credits, max_uses = int(parts[2]), int(parts[3])
+            await database.create_promo(parts[1], credits, max_uses)
+        except ValueError:
+            await message.answer("SUMMA va LIMIT musbat butun son bo'lishi kerak.")
+            return
+        await message.answer(f"Promo kod yaratildi: <code>{parts[1].upper()}</code>")
 
     @router.callback_query(F.data == "stars_custom")
     async def custom_stars_callback(callback: CallbackQuery, state: FSMContext) -> None:
@@ -414,8 +630,12 @@ def build_router(services: Services) -> Router:
 
     @router.pre_checkout_query()
     async def pre_checkout_handler(query: PreCheckoutQuery) -> None:
-        valid = False
-        if query.invoice_payload:
+        valid = (
+            query.currency == "XTR"
+            and query.total_amount == settings.premium_stars
+            and query.invoice_payload == f"premium:{settings.premium_stars}"
+        )
+        if query.invoice_payload and not valid:
             valid, _stars, _credits = parse_payment_payload(
                 query.invoice_payload,
                 currency=query.currency,
@@ -431,6 +651,23 @@ def build_router(services: Services) -> Router:
     async def successful_payment_handler(message: Message) -> None:
         payment = message.successful_payment
         if not payment or not message.from_user:
+            return
+        if (
+            payment.invoice_payload == f"premium:{settings.premium_stars}"
+            and payment.currency == "XTR"
+            and payment.total_amount == settings.premium_stars
+        ):
+            expires_at = await database.activate_premium(
+                message.from_user.id,
+                stars=settings.premium_stars,
+                charge_id=payment.telegram_payment_charge_id,
+            )
+            expiry = datetime.fromtimestamp(expires_at, UTC).strftime("%Y-%m-%d")
+            await message.answer(
+                "💎 Premium faollashtirildi.\n"
+                f"Amal qilish muddati: {expiry}",
+                reply_markup=main_keyboard(),
+            )
             return
         valid, stars, credits = parse_payment_payload(
             payment.invoice_payload,
@@ -498,18 +735,44 @@ def build_router(services: Services) -> Router:
             f"Yangi balans: {format_money(balance)}"
         )
 
-    @router.message(F.text.in_({VIDEO_BUTTON, "Video yuklash"}))
+    @router.message(F.text.in_(VIDEO_LABELS | {"Video yuklash"}))
     async def choose_video(message: Message, state: FSMContext) -> None:
         await ensure_user(message, database)
-        await state.set_state(MediaStates.video_download)
+        await state.set_state(MediaStates.video_quality)
         await message.answer(
-            "📥 <b>Video yuklash</b>\n\n"
-            "YouTube yoki Instagram havolasini yuboring.\n"
-            "Telegram videosini fayl sifatida yuborish yoki forward qilish ham mumkin.",
-            reply_markup=cancel_keyboard(),
+            "📥 <b>Video sifatini tanlang</b>\n\n"
+            "1080p hajmi katta bo'lishi mumkin. Premium foydalanuvchilar "
+            "kunlik limitsiz foydalanadi.",
+            reply_markup=quality_keyboard(),
         )
 
-    @router.message(F.text.in_({MP3_BUTTON, "MP3 yuklash"}))
+    @router.callback_query(MediaStates.video_quality, F.data.startswith("quality:"))
+    async def quality_callback(callback: CallbackQuery, state: FSMContext) -> None:
+        if not callback.data:
+            return
+        quality = callback.data.split(":", maxsplit=1)[1]
+        if quality not in {"360", "720", "1080", "audio"}:
+            await callback.answer("Sifat noto'g'ri", show_alert=True)
+            return
+        if quality == "1080" and not await database.is_premium(callback.from_user.id):
+            await callback.answer(
+                "1080p Premium foydalanuvchilar uchun.",
+                show_alert=True,
+            )
+            return
+        await state.update_data(quality=quality)
+        await state.set_state(
+            MediaStates.mp3_download if quality == "audio" else MediaStates.video_download
+        )
+        text = (
+            "🎵 Havola, video yoki audio yuboring."
+            if quality == "audio"
+            else f"📥 {quality}p tanlandi. YouTube/Instagram havolasi yoki video yuboring."
+        )
+        await callback.message.answer(text, reply_markup=cancel_keyboard())
+        await callback.answer()
+
+    @router.message(F.text.in_(MP3_LABELS | {"MP3 yuklash"}))
     async def choose_mp3(message: Message, state: FSMContext) -> None:
         await ensure_user(message, database)
         await state.set_state(MediaStates.mp3_download)
@@ -519,7 +782,51 @@ def build_router(services: Services) -> Router:
             reply_markup=cancel_keyboard(),
         )
 
-    @router.message(F.text.in_({CIRCLE_BUTTON, "Aylana video qilish"}))
+    @router.message(F.text.in_(HISTORY_LABELS | {"Yuklash tarixi"}))
+    @router.message(Command("history"))
+    async def history_handler(message: Message) -> None:
+        await ensure_user(message, database)
+        if not message.from_user:
+            return
+        items = await database.recent_downloads(message.from_user.id, 10)
+        available = [
+            (item.id, item.title or f"{item.media_type} {item.quality}".strip())
+            for item in items
+            if item.status == "completed" and item.telegram_file_id
+        ]
+        if not available:
+            await message.answer("Yuklash tarixi hozircha bo'sh.")
+            return
+        await message.answer(
+            "🕘 Qayta yuborish uchun faylni tanlang:",
+            reply_markup=history_keyboard(available),
+        )
+
+    @router.callback_query(F.data.startswith("history:"))
+    async def history_callback(callback: CallbackQuery) -> None:
+        try:
+            download_id = int((callback.data or "").split(":", maxsplit=1)[1])
+        except (IndexError, ValueError):
+            await callback.answer("Tarix yozuvi noto'g'ri", show_alert=True)
+            return
+        item = await database.get_download(callback.from_user.id, download_id)
+        if not item or not item.telegram_file_id:
+            await callback.answer("Fayl topilmadi", show_alert=True)
+            return
+        if item.media_type == "audio":
+            await callback.message.answer_audio(
+                item.telegram_file_id,
+                caption="↻ Tarixdan qayta yuborildi.",
+            )
+        else:
+            await callback.message.answer_video(
+                item.telegram_file_id,
+                caption="↻ Tarixdan qayta yuborildi.",
+                supports_streaming=True,
+            )
+        await callback.answer()
+
+    @router.message(F.text.in_(CIRCLE_LABELS | {"Aylana video qilish"}))
     async def choose_circle(message: Message, state: FSMContext) -> None:
         await ensure_user(message, database)
         await state.set_state(MediaStates.circle)
@@ -530,7 +837,9 @@ def build_router(services: Services) -> Router:
             reply_markup=cancel_keyboard(),
         )
 
-    @router.message(F.text.in_({RECTANGLE_BUTTON, "Aylanani to'rtburchak qilish"}))
+    @router.message(
+        F.text.in_(RECTANGLE_LABELS | {"Aylanani to'rtburchak qilish"})
+    )
     async def choose_rectangle(message: Message, state: FSMContext) -> None:
         await ensure_user(message, database)
         await state.set_state(MediaStates.rectangle)
@@ -547,25 +856,112 @@ def build_router(services: Services) -> Router:
         state: FSMContext,
         bot: Bot,
     ) -> None:
-        status = await message.answer("⏳ Video yuklanmoqda...")
-        try:
-            with tempfile.TemporaryDirectory(
-                prefix="video-",
-                dir=settings.temp_dir,
-            ) as temp:
-                source = await _resolve_source(message, bot, services, Path(temp))
-                await _check_output(source, settings)
-                await bot.send_chat_action(message.chat.id, ChatAction.UPLOAD_VIDEO)
-                await message.answer_video(
-                    FSInputFile(source),
-                    caption="✅ Video tayyor.",
-                    supports_streaming=True,
-                    reply_markup=main_keyboard(),
-                )
+        await ensure_user(message, database)
+        if not message.from_user:
+            return
+        allowed, remaining = await database.reserve_daily_use(
+            message.from_user.id,
+            settings.daily_free_limit,
+        )
+        if not allowed:
             await state.clear()
+            await message.answer(
+                "Bugungi bepul limitingiz tugadi. Ertaga qayta urinib ko'ring "
+                "yoki Premium obuna oling.",
+                reply_markup=main_keyboard(),
+            )
+            return
+        state_data = await state.get_data()
+        quality = str(state_data.get("quality", "720"))
+        source_url = message.text.strip() if message.text else None
+        download_id = await database.create_download(
+            message.from_user.id,
+            source_url=source_url,
+            media_type="video",
+            quality=quality,
+        )
+        status = await message.answer("⏳ Navbatga qo'shildi...")
+        completed = False
+        try:
+            async def work(context: JobContext) -> tuple[Message, str]:
+                await _update_status(status, "⏳ Yuklash boshlandi: 0%\n▱▱▱▱▱▱▱▱▱▱")
+                progress = _ProgressUpdater(status)
+                with tempfile.TemporaryDirectory(
+                    prefix="video-",
+                    dir=settings.temp_dir,
+                ) as temp:
+                    source = await _resolve_source(
+                        message,
+                        bot,
+                        services,
+                        Path(temp),
+                        quality=quality,
+                        progress=progress,
+                        cancel_event=context.cancel_event,
+                    )
+                    context.check_cancelled()
+                    await _check_output(source, settings)
+                    if source.stat().st_size > settings.telegram_upload_bytes:
+                        link = await _temporary_download_link(
+                            source,
+                            user_id=message.from_user.id,
+                            services=services,
+                        )
+                        sent = await message.answer(
+                            "✅ Video tayyor, lekin Telegram limitidan katta.\n\n"
+                            f"Yuklab olish: {link}\n"
+                            f"Havola {settings.public_file_ttl_seconds // 60} daqiqa ishlaydi.",
+                            reply_markup=main_keyboard(),
+                        )
+                    else:
+                        await bot.send_chat_action(
+                            message.chat.id,
+                            ChatAction.UPLOAD_VIDEO,
+                        )
+                        sent = await message.answer_video(
+                            FSInputFile(source),
+                            caption="✅ Video tayyor.",
+                            supports_streaming=True,
+                            reply_markup=main_keyboard(),
+                        )
+                    return sent, source.stem
+
+            sent, title = await services.jobs.run(
+                message.from_user.id,
+                work,
+                queued=lambda position: _update_status(
+                    status,
+                    f"⏳ Navbatdagi o'rningiz: {position}\n/cancel - bekor qilish",
+                ),
+            )
+            file_id = sent.video.file_id if sent.video else None
+            await database.finish_download(
+                download_id,
+                status="completed",
+                telegram_file_id=file_id,
+                title=title,
+            )
+            completed = True
+            await state.clear()
+        except (DownloadCancelled, JobCancelled) as exc:
+            await database.finish_download(
+                download_id,
+                status="cancelled",
+                error_message=str(exc),
+            )
+            await state.clear()
+            await message.answer("Yuklash bekor qilindi.", reply_markup=main_keyboard())
         except Exception as exc:
+            await database.finish_download(
+                download_id,
+                status="failed",
+                error_message=str(exc),
+            )
+            await database.log_error("video_download", str(exc), message.from_user.id)
             await _show_error(message, exc)
         finally:
+            if not completed and remaining >= 0:
+                await database.release_daily_use(message.from_user.id)
             await _delete_status(status)
 
     @router.message(MediaStates.mp3_download)
@@ -574,35 +970,118 @@ def build_router(services: Services) -> Router:
         state: FSMContext,
         bot: Bot,
     ) -> None:
-        status = await message.answer("⏳ 1/2: Audio yuklanmoqda...")
-        try:
-            with tempfile.TemporaryDirectory(
-                prefix="mp3-",
-                dir=settings.temp_dir,
-            ) as temp:
-                temp_dir = Path(temp)
-                source = await _resolve_source(
-                    message,
-                    bot,
-                    services,
-                    temp_dir,
-                    prefer_audio=True,
-                )
-                await _update_status(status, "⚙️ 2/2: MP3 tayyorlanmoqda...")
-                await _check_duration(source, services)
-                output = await services.media.to_mp3(source, temp_dir / "converted.mp3")
-                await _check_output(output, settings)
-                await bot.send_chat_action(message.chat.id, ChatAction.UPLOAD_VOICE)
-                await message.answer_audio(
-                    FSInputFile(output),
-                    title="Yuklangan audio",
-                    caption="✅ MP3 tayyor.",
-                    reply_markup=main_keyboard(),
-                )
+        await ensure_user(message, database)
+        if not message.from_user:
+            return
+        allowed, remaining = await database.reserve_daily_use(
+            message.from_user.id,
+            settings.daily_free_limit,
+        )
+        if not allowed:
             await state.clear()
+            await message.answer(
+                "Bugungi bepul limitingiz tugadi. Premium obuna kunlik limitni olib tashlaydi.",
+                reply_markup=main_keyboard(),
+            )
+            return
+        source_url = message.text.strip() if message.text else None
+        download_id = await database.create_download(
+            message.from_user.id,
+            source_url=source_url,
+            media_type="audio",
+            quality="mp3",
+        )
+        status = await message.answer("⏳ Navbatga qo'shildi...")
+        completed = False
+        try:
+            async def work(context: JobContext) -> tuple[Message, str]:
+                progress = _ProgressUpdater(status)
+                with tempfile.TemporaryDirectory(
+                    prefix="mp3-",
+                    dir=settings.temp_dir,
+                ) as temp:
+                    temp_dir = Path(temp)
+                    source = await _resolve_source(
+                        message,
+                        bot,
+                        services,
+                        temp_dir,
+                        prefer_audio=True,
+                        quality="audio",
+                        progress=progress,
+                        cancel_event=context.cancel_event,
+                    )
+                    context.check_cancelled()
+                    await _update_status(status, "⚙️ MP3 tayyorlanmoqda...")
+                    await _check_duration(source, services)
+                    output = await services.media.to_mp3(
+                        source,
+                        temp_dir / "converted.mp3",
+                        cancel_event=context.cancel_event,
+                    )
+                    context.check_cancelled()
+                    await _check_output(output, settings)
+                    if output.stat().st_size > settings.telegram_upload_bytes:
+                        link = await _temporary_download_link(
+                            output,
+                            user_id=message.from_user.id,
+                            services=services,
+                        )
+                        sent = await message.answer(
+                            "✅ MP3 tayyor, lekin Telegram limitidan katta.\n\n"
+                            f"Yuklab olish: {link}\n"
+                            f"Havola {settings.public_file_ttl_seconds // 60} daqiqa ishlaydi.",
+                            reply_markup=main_keyboard(),
+                        )
+                    else:
+                        await bot.send_chat_action(
+                            message.chat.id,
+                            ChatAction.UPLOAD_VOICE,
+                        )
+                        sent = await message.answer_audio(
+                            FSInputFile(output),
+                            title="Yuklangan audio",
+                            caption="✅ MP3 tayyor.",
+                            reply_markup=main_keyboard(),
+                        )
+                    return sent, output.stem
+
+            sent, title = await services.jobs.run(
+                message.from_user.id,
+                work,
+                queued=lambda position: _update_status(
+                    status,
+                    f"⏳ Navbatdagi o'rningiz: {position}\n/cancel - bekor qilish",
+                ),
+            )
+            file_id = sent.audio.file_id if sent.audio else None
+            await database.finish_download(
+                download_id,
+                status="completed",
+                telegram_file_id=file_id,
+                title=title,
+            )
+            completed = True
+            await state.clear()
+        except (DownloadCancelled, JobCancelled) as exc:
+            await database.finish_download(
+                download_id,
+                status="cancelled",
+                error_message=str(exc),
+            )
+            await state.clear()
+            await message.answer("Yuklash bekor qilindi.", reply_markup=main_keyboard())
         except Exception as exc:
+            await database.finish_download(
+                download_id,
+                status="failed",
+                error_message=str(exc),
+            )
+            await database.log_error("mp3_download", str(exc), message.from_user.id)
             await _show_error(message, exc)
         finally:
+            if not completed and remaining >= 0:
+                await database.release_daily_use(message.from_user.id)
             await _delete_status(status)
 
     @router.message(MediaStates.circle)
@@ -702,13 +1181,30 @@ def build_router(services: Services) -> Router:
                     from_video_note=bool(message.video_note),
                 )
                 await _check_output(output, settings)
-                await bot.send_chat_action(message.chat.id, ChatAction.UPLOAD_VIDEO)
-                await message.answer_video(
-                    FSInputFile(output),
-                    caption="✅ Oddiy video tayyor.",
-                    supports_streaming=True,
-                    reply_markup=main_keyboard(),
-                )
+                if output.stat().st_size > settings.telegram_upload_bytes:
+                    if not message.from_user:
+                        raise MediaConversionError("Foydalanuvchi aniqlanmadi")
+                    link = await _temporary_download_link(
+                        output,
+                        user_id=message.from_user.id,
+                        services=services,
+                    )
+                    await message.answer(
+                        "✅ Oddiy video tayyor.\n\n"
+                        f"Katta faylni yuklab olish: {link}",
+                        reply_markup=main_keyboard(),
+                    )
+                else:
+                    await bot.send_chat_action(
+                        message.chat.id,
+                        ChatAction.UPLOAD_VIDEO,
+                    )
+                    await message.answer_video(
+                        FSInputFile(output),
+                        caption="✅ Oddiy video tayyor.",
+                        supports_streaming=True,
+                        reply_markup=main_keyboard(),
+                    )
             await state.clear()
         except Exception as exc:
             await _show_error(message, exc)

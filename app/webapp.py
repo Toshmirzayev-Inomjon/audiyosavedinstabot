@@ -1,22 +1,31 @@
 from __future__ import annotations
 
 # ruff: noqa: E501
+import asyncio
 import hashlib
 import hmac
 import json
 import logging
+import mimetypes
+import secrets
+import shutil
+import tempfile
 import time
 from html import escape
-from urllib.parse import parse_qsl
+from pathlib import Path
+from urllib.parse import parse_qsl, quote
 
 from aiogram import Bot
+from aiogram.types import FSInputFile
 from aiohttp import web
 
 from app.config import Settings
 from app.database import Database
 from app.security import generate_code, hash_code, hash_password
+from app.services.downloader import MediaDownloadError, platform_for_url
 
 logger = logging.getLogger(__name__)
+MAX_INIT_DATA_AGE_SECONDS = 24 * 60 * 60
 
 
 class WebAppAuthError(RuntimeError):
@@ -43,6 +52,13 @@ def verify_init_data(init_data: str, bot_token: str) -> dict:
     ).hexdigest()
     if not hmac.compare_digest(calculated_hash, received_hash):
         raise WebAppAuthError("Telegram WebApp imzosi noto'g'ri")
+    try:
+        auth_date = int(values.get("auth_date", "0"))
+    except ValueError as exc:
+        raise WebAppAuthError("Telegram WebApp vaqti noto'g'ri") from exc
+    now = int(time.time())
+    if auth_date <= 0 or auth_date > now + 60 or now - auth_date > MAX_INIT_DATA_AGE_SECONDS:
+        raise WebAppAuthError("Telegram WebApp sessiyasi eskirgan")
     user_raw = values.get("user")
     if not user_raw:
         raise WebAppAuthError("Telegram foydalanuvchi ma'lumoti topilmadi")
@@ -101,6 +117,31 @@ async def health_handler(_request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+async def public_file_handler(request: web.Request) -> web.StreamResponse:
+    token = request.match_info["token"]
+    database: Database = request.app["database"]
+    item = await database.get_public_file(token)
+    if not item:
+        raise web.HTTPNotFound(text="Fayl topilmadi yoki havola muddati tugagan")
+    raw_path, filename, mime_type = item
+    settings: Settings = request.app["settings"]
+    allowed_root = (settings.temp_dir / "public").resolve()
+    path = Path(raw_path).resolve()
+    if not path.is_relative_to(allowed_root) or not path.is_file():
+        raise web.HTTPNotFound(text="Fayl topilmadi")
+    return web.FileResponse(
+        path,
+        headers={
+            "Content-Type": mime_type,
+            "Content-Disposition": (
+                "attachment; "
+                f"filename*=UTF-8''{quote(filename, safe='')}"
+            ),
+            "Cache-Control": "private, max-age=300",
+        },
+    )
+
+
 async def me_handler(request: web.Request) -> web.Response:
     user = _auth_user(request)
     user_id = int(user["id"])
@@ -115,6 +156,11 @@ async def me_handler(request: web.Request) -> web.Response:
     profile = await database.get_profile(user_id)
     accounts = await database.list_accounts(user_id)
     balance = await database.get_balance(user_id)
+    downloads = await database.recent_downloads(user_id, 15)
+    premium_until = await database.premium_until(user_id)
+    referral_count, referral_earned = await database.referral_stats(user_id)
+    language = await database.get_language(user_id)
+    settings: Settings = request.app["settings"]
     return web.json_response(
         {
             "telegram_user": {
@@ -126,6 +172,25 @@ async def me_handler(request: web.Request) -> web.Response:
             "balance": balance,
             "profile": _serialize_profile(profile),
             "accounts": [_serialize_account(account) for account in accounts],
+            "downloads": [
+                {
+                    "id": item.id,
+                    "source_url": item.source_url,
+                    "media_type": item.media_type,
+                    "quality": item.quality,
+                    "title": item.title,
+                    "status": item.status,
+                    "created_at": item.created_at,
+                }
+                for item in downloads
+            ],
+            "premium_until": premium_until,
+            "language": language,
+            "is_admin": user_id in settings.admin_ids,
+            "referral": {
+                "count": referral_count,
+                "earned": referral_earned,
+            },
             "limitations": {
                 "real_bank_cards": False,
                 "message": (
@@ -135,6 +200,234 @@ async def me_handler(request: web.Request) -> web.Response:
             },
         }
     )
+
+
+def _auth_admin(request: web.Request) -> dict:
+    user = _auth_user(request)
+    settings: Settings = request.app["settings"]
+    if int(user["id"]) not in settings.admin_ids:
+        raise web.HTTPForbidden(text="Admin huquqi kerak")
+    return user
+
+
+async def _web_public_link(
+    *,
+    services,
+    database: Database,
+    user_id: int,
+    path: Path,
+) -> str:
+    if not services.public_base_url:
+        raise RuntimeError("Public HTTPS manzil topilmadi")
+    public_dir = services.settings.temp_dir / "public"
+    public_dir.mkdir(parents=True, exist_ok=True)
+    destination = public_dir / f"{user_id}-{secrets.token_hex(8)}{path.suffix}"
+    await asyncio.to_thread(shutil.move, path, destination)
+    token = await database.create_public_file(
+        user_id,
+        path=str(destination),
+        filename=path.name,
+        mime_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+        ttl_seconds=services.settings.public_file_ttl_seconds,
+    )
+    return f"{services.public_base_url}/files/{token}"
+
+
+async def _web_download_job(
+    *,
+    request_app: web.Application,
+    user_id: int,
+    url: str,
+    quality: str,
+    download_id: int,
+) -> None:
+    services = request_app["services"]
+    bot: Bot = request_app["bot"]
+    database: Database = request_app["database"]
+    settings: Settings = request_app["settings"]
+    status = await bot.send_message(user_id, "⏳ Mini App so'rovi navbatga qo'shildi...")
+    completed = False
+    try:
+        async def work(context):
+            with tempfile.TemporaryDirectory(
+                prefix="web-download-",
+                dir=settings.temp_dir,
+            ) as temp:
+                temp_dir = Path(temp)
+                source = await services.downloader.download(
+                    url,
+                    temp_dir,
+                    audio=quality == "audio",
+                    quality=quality,
+                    cancel_event=context.cancel_event,
+                )
+                context.check_cancelled()
+                if quality == "audio":
+                    await status.edit_text("⚙️ MP3 tayyorlanmoqda...")
+                    output = await services.media.to_mp3(
+                        source,
+                        temp_dir / "converted.mp3",
+                        cancel_event=context.cancel_event,
+                    )
+                    if output.stat().st_size > settings.telegram_upload_bytes:
+                        link = await _web_public_link(
+                            services=services,
+                            database=database,
+                            user_id=user_id,
+                            path=output,
+                        )
+                        await bot.send_message(
+                            user_id,
+                            f"✅ MP3 tayyor. Katta fayl havolasi:\n{link}",
+                        )
+                        return None, output.stem
+                    sent = await bot.send_audio(
+                        user_id,
+                        FSInputFile(output),
+                        caption="✅ Mini App orqali MP3 tayyor.",
+                    )
+                    return sent.audio.file_id if sent.audio else None, output.stem
+                if source.stat().st_size > settings.telegram_upload_bytes:
+                    link = await _web_public_link(
+                        services=services,
+                        database=database,
+                        user_id=user_id,
+                        path=source,
+                    )
+                    await bot.send_message(
+                        user_id,
+                        f"✅ Video tayyor. Katta fayl havolasi:\n{link}",
+                    )
+                    return None, source.stem
+                sent = await bot.send_video(
+                    user_id,
+                    FSInputFile(source),
+                    caption=f"✅ Mini App orqali {quality}p video tayyor.",
+                    supports_streaming=True,
+                )
+                return sent.video.file_id if sent.video else None, source.stem
+
+        file_id, title = await services.jobs.run(user_id, work)
+        await database.finish_download(
+            download_id,
+            status="completed",
+            telegram_file_id=file_id,
+            title=title,
+        )
+        completed = True
+        await status.edit_text("✅ Tayyor fayl bot chatiga yuborildi.")
+    except Exception as exc:
+        await database.finish_download(
+            download_id,
+            status="failed",
+            error_message=str(exc),
+        )
+        await database.log_error("webapp_download", str(exc), user_id)
+        await status.edit_text(f"❌ Yuklash bajarilmadi: {str(exc)[:500]}")
+    finally:
+        if not completed:
+            await database.release_daily_use(user_id)
+
+
+async def create_download_handler(request: web.Request) -> web.Response:
+    user = _auth_user(request)
+    user_id = int(user["id"])
+    data = await _json_body(request)
+    url = str(data.get("url", "")).strip()
+    quality = str(data.get("quality", "720"))
+    if quality not in {"360", "720", "1080", "audio"}:
+        raise web.HTTPBadRequest(text="Sifat noto'g'ri")
+    try:
+        platform_for_url(url)
+    except MediaDownloadError as exc:
+        raise web.HTTPBadRequest(text=str(exc)) from exc
+    database: Database = request.app["database"]
+    settings: Settings = request.app["settings"]
+    if quality == "1080" and not await database.is_premium(user_id):
+        raise web.HTTPPaymentRequired(text="1080p uchun Premium kerak")
+    allowed, remaining = await database.reserve_daily_use(
+        user_id,
+        settings.daily_free_limit,
+    )
+    if not allowed:
+        raise web.HTTPTooManyRequests(text="Bugungi bepul limit tugagan")
+    download_id = await database.create_download(
+        user_id,
+        source_url=url,
+        media_type="audio" if quality == "audio" else "video",
+        quality=quality,
+    )
+    task = asyncio.create_task(
+        _web_download_job(
+            request_app=request.app,
+            user_id=user_id,
+            url=url,
+            quality=quality,
+            download_id=download_id,
+        )
+    )
+    tasks: set[asyncio.Task] = request.app["tasks"]
+    tasks.add(task)
+    task.add_done_callback(tasks.discard)
+    return web.json_response(
+        {"ok": True, "download_id": download_id, "remaining": remaining}
+    )
+
+
+async def set_language_handler(request: web.Request) -> web.Response:
+    user = _auth_user(request)
+    data = await _json_body(request)
+    language = str(data.get("language", ""))
+    database: Database = request.app["database"]
+    try:
+        await database.set_language(int(user["id"]), language)
+    except ValueError as exc:
+        raise web.HTTPBadRequest(text=str(exc)) from exc
+    return web.json_response({"ok": True, "language": language})
+
+
+async def admin_stats_handler(request: web.Request) -> web.Response:
+    _auth_admin(request)
+    database: Database = request.app["database"]
+    return web.json_response({"stats": await database.admin_stats()})
+
+
+async def admin_users_handler(request: web.Request) -> web.Response:
+    _auth_admin(request)
+    database: Database = request.app["database"]
+    return web.json_response({"users": await database.admin_users()})
+
+
+async def admin_errors_handler(request: web.Request) -> web.Response:
+    _auth_admin(request)
+    database: Database = request.app["database"]
+    return web.json_response({"errors": await database.admin_errors()})
+
+
+async def admin_payments_handler(request: web.Request) -> web.Response:
+    _auth_admin(request)
+    database: Database = request.app["database"]
+    return web.json_response({"payments": await database.admin_payments()})
+
+
+async def admin_balance_handler(request: web.Request) -> web.Response:
+    admin = _auth_admin(request)
+    data = await _json_body(request)
+    try:
+        user_id = int(data.get("user_id"))
+        amount = int(data.get("amount"))
+    except (TypeError, ValueError) as exc:
+        raise web.HTTPBadRequest(text="USER_ID yoki summa noto'g'ri") from exc
+    if amount <= 0:
+        raise web.HTTPBadRequest(text="Summa musbat bo'lishi kerak")
+    database: Database = request.app["database"]
+    _, balance = await database.add_balance(
+        user_id,
+        amount,
+        f"WebApp admin {admin['id']} hisobni to'ldirdi",
+        kind="admin_credit",
+    )
+    return web.json_response({"ok": True, "balance": balance})
 
 
 async def save_profile_handler(request: web.Request) -> web.Response:
@@ -229,21 +522,32 @@ async def start_web_app(
     settings: Settings,
     database: Database,
     bot: Bot,
+    services=None,
 ) -> web.AppRunner:
     app = web.Application()
     app["settings"] = settings
     app["database"] = database
     app["bot"] = bot
+    app["services"] = services
+    app["tasks"] = set()
     app.add_routes(
         [
             web.get("/", index_handler),
             web.get("/health", health_handler),
+            web.get("/files/{token}", public_file_handler),
             web.get("/api/me", me_handler),
+            web.post("/api/downloads", create_download_handler),
+            web.post("/api/language", set_language_handler),
             web.post("/api/profile", save_profile_handler),
             web.post("/api/phone/request-code", request_code_handler),
             web.post("/api/phone/verify", verify_code_handler),
             web.post("/api/accounts", create_account_handler),
             web.delete("/api/accounts/{account_id:\\d+}", remove_account_handler),
+            web.get("/api/admin/stats", admin_stats_handler),
+            web.get("/api/admin/users", admin_users_handler),
+            web.get("/api/admin/errors", admin_errors_handler),
+            web.get("/api/admin/payments", admin_payments_handler),
+            web.post("/api/admin/balance", admin_balance_handler),
         ]
     )
     runner = web.AppRunner(app)
@@ -304,7 +608,7 @@ WEBAPP_HTML = """<!doctype html>
       mask-image: linear-gradient(to bottom, black, transparent 70%);
     }
 
-    button, input { font: inherit; }
+    button, input, select { font: inherit; }
     button { border: 0; cursor: pointer; }
     button:disabled { opacity: .55; cursor: wait; }
 
@@ -525,7 +829,7 @@ WEBAPP_HTML = """<!doctype html>
       font-weight: 700;
     }
     .input-wrap { position: relative; }
-    input {
+    input, select {
       width: 100%;
       height: 48px;
       padding: 0 13px;
@@ -536,8 +840,9 @@ WEBAPP_HTML = """<!doctype html>
       background: rgba(3, 10, 20, .44);
       transition: border-color .2s, box-shadow .2s, transform .2s;
     }
+    select { appearance: none; padding-right: 30px; }
     input::placeholder { color: rgba(143,163,184,.55); }
-    input:focus {
+    input:focus, select:focus {
       border-color: rgba(42,171,238,.65);
       box-shadow: 0 0 0 4px rgba(42,171,238,.09);
     }
@@ -768,11 +1073,56 @@ WEBAPP_HTML = """<!doctype html>
       <div class="stat"><span class="stat-icon">▣</span><strong id="account_stat">0 ta</strong><small>Hisoblar</small></div>
     </section>
 
+    <section class="info-card">
+      <div class="info-icon">★</div>
+      <div>
+        <b id="premium_status">Premium tekshirilmoqda</b>
+        <span id="referral_status">Referral ma'lumoti yuklanmoqda...</span>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div class="section-title">
+          <div class="section-icon">↓</div>
+          <div><h2 id="ui_download_title">Media yuklash</h2><div class="section-sub" id="ui_download_sub">Natija bot chatiga yuboriladi</div></div>
+        </div>
+      </div>
+      <div class="field full">
+        <label for="download_url">YOUTUBE YOKI INSTAGRAM HAVOLASI</label>
+        <input id="download_url" placeholder="https://youtube.com/watch?v=..." inputmode="url" />
+      </div>
+      <div class="form-grid" style="margin-top:11px">
+        <div class="field">
+          <label for="download_quality">SIFAT</label>
+          <select id="download_quality">
+            <option value="360">360p</option>
+            <option value="720" selected>720p</option>
+            <option value="1080">1080p Premium</option>
+            <option value="audio">Faqat MP3</option>
+          </select>
+        </div>
+        <div class="field" style="display:flex;align-items:flex-end">
+          <button class="btn flex" id="ui_download_btn" onclick="submitDownload()">↓ Yuklashni boshlash</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div class="section-title">
+          <div class="section-icon">↻</div>
+          <div><h2 id="ui_history_title">Yuklash tarixi</h2><div class="section-sub">Oxirgi 15 ta so'rov</div></div>
+        </div>
+      </div>
+      <div id="download_history" class="accounts"></div>
+    </section>
+
     <section class="section">
       <div class="section-head">
         <div class="section-title">
           <div class="section-icon">●</div>
-          <div><h2>Shaxsiy profil</h2><div class="section-sub">Ma'lumotlaringizni boshqaring</div></div>
+          <div><h2 id="ui_profile_title">Shaxsiy profil</h2><div class="section-sub">Ma'lumotlaringizni boshqaring</div></div>
         </div>
         <span id="profile_badge" class="status-badge warn">To'liq emas</span>
       </div>
@@ -809,13 +1159,21 @@ WEBAPP_HTML = """<!doctype html>
         </div>
       </div>
       <p id="profile_status">Profil holati tekshirilmoqda...</p>
+      <div class="field full" style="margin-top:14px">
+        <label for="language_select">INTERFEYS TILI</label>
+        <select id="language_select" onchange="setLanguage(this.value)">
+          <option value="uz">🇺🇿 O'zbekcha</option>
+          <option value="ru">🇷🇺 Русский</option>
+          <option value="en">🇬🇧 English</option>
+        </select>
+      </div>
     </section>
 
     <section class="section">
       <div class="section-head">
         <div class="section-title">
           <div class="section-icon">▣</div>
-          <div><h2>Virtual hisoblar</h2><div class="section-sub">Bot ichidagi hisob raqamlaringiz</div></div>
+          <div><h2 id="ui_accounts_title">Virtual hisoblar</h2><div class="section-sub">Bot ichidagi hisob raqamlaringiz</div></div>
         </div>
       </div>
       <div class="create-row">
@@ -832,6 +1190,30 @@ WEBAPP_HTML = """<!doctype html>
         Telegram imzosi har bir so'rovda tekshiriladi. Parolingiz ochiq holda emas,
         xavfsiz hash ko'rinishida saqlanadi. Bu real bank kartasi emas.
       </div>
+    </section>
+
+    <section class="section" id="admin_section" style="display:none">
+      <div class="section-head">
+        <div class="section-title">
+          <div class="section-icon">⚙</div>
+          <div><h2>Admin panel</h2><div class="section-sub">Bot holati va foydalanuvchilar</div></div>
+        </div>
+      </div>
+      <div id="admin_stats" class="stats"></div>
+      <div class="form-grid">
+        <div class="field">
+          <label for="admin_user_id">TELEGRAM USER ID</label>
+          <input id="admin_user_id" inputmode="numeric" placeholder="123456789" />
+        </div>
+        <div class="field">
+          <label for="admin_amount">BALANS SUMMASI</label>
+          <input id="admin_amount" inputmode="numeric" placeholder="5000" />
+        </div>
+      </div>
+      <button class="btn flex" style="width:100%;margin-top:11px" onclick="adminAddBalance()">＋ Balans qo'shish</button>
+      <div id="admin_users" class="accounts"></div>
+      <div id="admin_payments" class="accounts"></div>
+      <div id="admin_errors" class="accounts"></div>
     </section>
 
     <footer class="footer">Saved Insta · Telegram WebApp</footer>
@@ -856,6 +1238,44 @@ WEBAPP_HTML = """<!doctype html>
     }
     const initData = tg?.initData || "";
     let toastTimer;
+    const UI_TEXT = {
+      uz: {
+        download: "Media yuklash", downloadSub: "Natija bot chatiga yuboriladi",
+        downloadBtn: "↓ Yuklashni boshlash", history: "Yuklash tarixi",
+        profile: "Shaxsiy profil", accounts: "Virtual hisoblar",
+        save: "✓ Profilni saqlash", code: "✦ Kod yuborish", verify: "Tasdiqlash",
+        openAccount: "＋ Ochish"
+      },
+      ru: {
+        download: "Загрузка медиа", downloadSub: "Результат придёт в чат бота",
+        downloadBtn: "↓ Начать загрузку", history: "История загрузок",
+        profile: "Личный профиль", accounts: "Виртуальные счета",
+        save: "✓ Сохранить профиль", code: "✦ Отправить код", verify: "Подтвердить",
+        openAccount: "＋ Открыть"
+      },
+      en: {
+        download: "Media download", downloadSub: "The result will be sent to the bot chat",
+        downloadBtn: "↓ Start download", history: "Download history",
+        profile: "Personal profile", accounts: "Virtual accounts",
+        save: "✓ Save profile", code: "✦ Send code", verify: "Verify",
+        openAccount: "＋ Open"
+      }
+    };
+
+    function applyLanguage(language) {
+      const value = UI_TEXT[language] || UI_TEXT.uz;
+      document.documentElement.lang = language;
+      document.getElementById("ui_download_title").textContent = value.download;
+      document.getElementById("ui_download_sub").textContent = value.downloadSub;
+      document.getElementById("ui_download_btn").textContent = value.downloadBtn;
+      document.getElementById("ui_history_title").textContent = value.history;
+      document.getElementById("ui_profile_title").textContent = value.profile;
+      document.getElementById("ui_accounts_title").textContent = value.accounts;
+      document.getElementById("save_btn").textContent = value.save;
+      document.getElementById("code_btn").textContent = value.code;
+      document.getElementById("verify_btn").textContent = value.verify;
+      document.getElementById("account_btn").textContent = value.openAccount;
+    }
 
     async function api(path, options = {}) {
       const response = await fetch(path, {
@@ -926,6 +1346,16 @@ WEBAPP_HTML = """<!doctype html>
         document.getElementById("phone_stat").textContent = p.phone_verified ? "Tasdiqlangan" : "Tasdiqlanmagan";
         document.getElementById("password_stat").textContent = p.password_set ? "O'rnatilgan" : "O'rnatilmagan";
         document.getElementById("account_stat").textContent = (data.accounts || []).length + " ta";
+        document.getElementById("language_select").value = data.language || "uz";
+        applyLanguage(data.language || "uz");
+        const premiumActive = data.premium_until && data.premium_until * 1000 > Date.now();
+        document.getElementById("premium_status").textContent =
+          premiumActive
+            ? "Premium faol · " + new Date(data.premium_until * 1000).toLocaleDateString()
+            : "Standart tarif";
+        document.getElementById("referral_status").textContent =
+          "Takliflar: " + (data.referral?.count || 0) +
+          " · Bonus: " + money(data.referral?.earned || 0);
         const complete = p.phone_verified && p.password_set;
         const badge = document.getElementById("profile_badge");
         badge.textContent = complete ? "Himoyalangan" : "To'liq emas";
@@ -937,6 +1367,11 @@ WEBAPP_HTML = """<!doctype html>
           !!p.phone_verified
         );
         renderAccounts(data.accounts || []);
+        renderHistory(data.downloads || []);
+        if (data.is_admin) {
+          document.getElementById("admin_section").style.display = "block";
+          loadAdmin();
+        }
       } catch (error) {
         showStatus(error.message, false);
         toast(error.message, false);
@@ -961,6 +1396,132 @@ WEBAPP_HTML = """<!doctype html>
           <button class="btn danger" onclick="removeAccount(${Number(account.id)})">O'chirish</button>
         </article>
       `).join("");
+    }
+
+    function renderHistory(items) {
+      const root = document.getElementById("download_history");
+      if (!items.length) {
+        root.innerHTML = "<div class='empty'><div class='empty-icon'>↻</div>Tarix hozircha bo'sh.</div>";
+        return;
+      }
+      const labels = {
+        queued: "Navbatda",
+        completed: "Tayyor",
+        failed: "Xato",
+        cancelled: "Bekor qilindi"
+      };
+      root.innerHTML = items.map(item => `
+        <article class="account">
+          <div class="account-main">
+            <div class="account-logo">${item.media_type === "audio" ? "♫" : "▶"}</div>
+            <div>
+              <strong>${escapeHtml(item.title || item.source_url || "Media")}</strong>
+              <span class="account-number">${escapeHtml(item.quality || "")} · ${labels[item.status] || item.status}</span>
+            </div>
+          </div>
+        </article>
+      `).join("");
+    }
+
+    async function submitDownload() {
+      const url = document.getElementById("download_url").value.trim();
+      const quality = document.getElementById("download_quality").value;
+      if (!url) {
+        toast("Havolani kiriting", false);
+        return;
+      }
+      setBusy(true, "Navbatga qo'shilmoqda");
+      try {
+        await api("/api/downloads", {
+          method: "POST",
+          body: JSON.stringify({ url, quality })
+        });
+        document.getElementById("download_url").value = "";
+        toast("So'rov qabul qilindi. Natija bot chatiga yuboriladi.");
+        haptic("medium");
+        setTimeout(load, 1200);
+      } catch (error) {
+        toast(error.message, false);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function setLanguage(language) {
+      try {
+        await api("/api/language", {
+          method: "POST",
+          body: JSON.stringify({ language })
+        });
+        applyLanguage(language);
+        toast("Til sozlamasi saqlandi");
+      } catch (error) {
+        toast(error.message, false);
+      }
+    }
+
+    async function loadAdmin() {
+      try {
+        const [statsData, usersData, paymentsData, errorsData] = await Promise.all([
+          api("/api/admin/stats"),
+          api("/api/admin/users"),
+          api("/api/admin/payments"),
+          api("/api/admin/errors")
+        ]);
+        const stats = statsData.stats || {};
+        document.getElementById("admin_stats").innerHTML = [
+          ["Foydalanuvchi", stats.users],
+          ["Yuklash", stats.downloads],
+          ["Premium", stats.premium]
+        ].map(item => `<div class="stat"><strong>${item[1] || 0}</strong><small>${item[0]}</small></div>`).join("");
+        document.getElementById("admin_users").innerHTML =
+          "<label style='margin-top:16px'>SO'NGGI FOYDALANUVCHILAR</label>" +
+          (usersData.users || []).slice(0, 20).map(user => `
+            <article class="account">
+              <div class="account-main"><div class="account-logo">●</div><div>
+                <strong>${escapeHtml(user.full_name || user.username || String(user.user_id))}</strong>
+                <span class="account-number">${user.user_id} · ${money(user.balance)}</span>
+              </div></div>
+            </article>`).join("");
+        document.getElementById("admin_payments").innerHTML =
+          "<label style='margin-top:16px'>SO'NGGI TO'LOVLAR</label>" +
+          (paymentsData.payments || []).slice(0, 10).map(payment => `
+            <article class="account">
+              <div class="account-main"><div class="account-logo">★</div><div>
+                <strong>${payment.stars} Stars · ${money(payment.credits)}</strong>
+                <span class="account-number">${payment.user_id} · ${escapeHtml(payment.status)}</span>
+              </div></div>
+            </article>`).join("");
+        document.getElementById("admin_errors").innerHTML =
+          "<label style='margin-top:16px'>SO'NGGI XATOLAR</label>" +
+          (errorsData.errors || []).slice(0, 10).map(error => `
+            <article class="account">
+              <div class="account-main"><div class="account-logo">!</div><div>
+                <strong>${escapeHtml(error.context)}</strong>
+                <span class="account-number">${escapeHtml(error.message).slice(0, 110)}</span>
+              </div></div>
+            </article>`).join("");
+      } catch (error) {
+        toast(error.message, false);
+      }
+    }
+
+    async function adminAddBalance() {
+      const userId = document.getElementById("admin_user_id").value;
+      const amount = document.getElementById("admin_amount").value;
+      setBusy(true, "Balans qo'shilmoqda");
+      try {
+        const result = await api("/api/admin/balance", {
+          method: "POST",
+          body: JSON.stringify({ user_id: userId, amount })
+        });
+        toast("Yangi balans: " + money(result.balance));
+        loadAdmin();
+      } catch (error) {
+        toast(error.message, false);
+      } finally {
+        setBusy(false);
+      }
     }
 
     async function saveProfile() {

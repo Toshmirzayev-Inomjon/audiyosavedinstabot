@@ -13,6 +13,7 @@ from aiogram.types import BotCommand, MenuButtonCommands, MenuButtonWebApp, WebA
 from app.config import Settings
 from app.database import Database
 from app.handlers import Services, build_router
+from app.jobs import JobManager
 from app.services.downloader import DownloadService
 from app.services.media import MediaService
 from app.services.telegram_downloader import TelegramDownloadService
@@ -53,7 +54,10 @@ async def run() -> None:
     settings = Settings.load()
     settings.prepare_directories()
 
-    database = Database(settings.database_path, settings.initial_balance)
+    database = Database(
+        settings.database_url or settings.database_path,
+        settings.initial_balance,
+    )
     await database.initialize()
 
     telegram = TelegramDownloadService(
@@ -73,6 +77,7 @@ async def run() -> None:
         ),
         media=MediaService(),
         telegram=telegram,
+        jobs=JobManager(settings.queue_concurrency),
     )
 
     session = None
@@ -95,7 +100,12 @@ async def run() -> None:
     )
     dispatcher = Dispatcher()
     dispatcher.include_router(build_router(services))
-    web_runner = await start_web_app(settings=settings, database=database, bot=bot)
+    web_runner = await start_web_app(
+        settings=settings,
+        database=database,
+        bot=bot,
+        services=services,
+    )
     tunnel: QuickTunnel | None = None
     webapp_public_url = settings.webapp_public_url
     if not webapp_public_url:
@@ -106,6 +116,7 @@ async def run() -> None:
             logging.exception(
                 "Vaqtinchalik WebApp tunnelini ishga tushirib bo'lmadi"
             )
+    services.public_base_url = webapp_public_url
 
     if not MediaService.available():
         logging.warning("ffmpeg/ffprobe topilmadi: konvertatsiya funksiyalari ishlamaydi")

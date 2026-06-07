@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import secrets
 import sqlite3
 import time
 from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import Any
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -79,7 +82,140 @@ CREATE TABLE IF NOT EXISTS star_payments (
 
 CREATE INDEX IF NOT EXISTS idx_star_payments_user_id
 ON star_payments(user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS downloads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    source_url TEXT,
+    media_type TEXT NOT NULL,
+    quality TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'queued',
+    telegram_file_id TEXT,
+    error_message TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_downloads_user_id
+ON downloads(user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS daily_usage (
+    user_id INTEGER NOT NULL,
+    usage_date TEXT NOT NULL,
+    count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, usage_date),
+    FOREIGN KEY (user_id) REFERENCES users(user_id)
+);
+
+CREATE TABLE IF NOT EXISTS subscriptions (
+    user_id INTEGER PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'active',
+    expires_at INTEGER NOT NULL,
+    charge_id TEXT UNIQUE,
+    stars INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(user_id)
+);
+
+CREATE TABLE IF NOT EXISTS subscription_payments (
+    charge_id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    stars INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(user_id)
+);
+
+CREATE TABLE IF NOT EXISTS referrals (
+    invitee_id INTEGER PRIMARY KEY,
+    inviter_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (invitee_id) REFERENCES users(user_id),
+    FOREIGN KEY (inviter_id) REFERENCES users(user_id)
+);
+
+CREATE TABLE IF NOT EXISTS promo_codes (
+    code TEXT PRIMARY KEY,
+    credits INTEGER NOT NULL,
+    max_uses INTEGER NOT NULL,
+    uses INTEGER NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS promo_redemptions (
+    code TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (code, user_id),
+    FOREIGN KEY (code) REFERENCES promo_codes(code),
+    FOREIGN KEY (user_id) REFERENCES users(user_id)
+);
+
+CREATE TABLE IF NOT EXISTS public_files (
+    token TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    path TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    mime_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+    expires_at INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(user_id)
+);
+
+CREATE TABLE IF NOT EXISTS error_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    context TEXT NOT NULL,
+    message TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
+
+POSTGRES_SCHEMA = (
+    SCHEMA.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY")
+    .replace("user_id INTEGER", "user_id BIGINT")
+    .replace("invitee_id INTEGER", "invitee_id BIGINT")
+    .replace("inviter_id INTEGER", "inviter_id BIGINT")
+)
+
+
+class _Connection:
+    def __init__(self, raw: Any, postgres: bool) -> None:
+        self.raw = raw
+        self.postgres = postgres
+
+    def __enter__(self) -> _Connection:
+        self.raw.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> bool | None:
+        return self.raw.__exit__(exc_type, exc, traceback)
+
+    def _query(self, query: str) -> str:
+        if not self.postgres:
+            return query
+        converted = query.replace("?", "%s").replace("BEGIN IMMEDIATE", "BEGIN")
+        if "INSERT OR IGNORE INTO" in converted:
+            converted = converted.replace("INSERT OR IGNORE INTO", "INSERT INTO")
+            converted = converted.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
+        return converted
+
+    def execute(self, query: str, parameters: tuple | list = ()):
+        return self.raw.execute(self._query(query), parameters)
+
+    def executescript(self, script: str) -> None:
+        if not self.postgres:
+            self.raw.executescript(script)
+            return
+        for statement in script.split(";"):
+            if statement.strip():
+                self.raw.execute(statement)
+
+    def rollback(self) -> None:
+        self.raw.rollback()
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,21 +243,66 @@ class UserAccount:
     created_at: str
 
 
+@dataclass(frozen=True, slots=True)
+class DownloadRecord:
+    id: int
+    source_url: str | None
+    media_type: str
+    quality: str
+    title: str
+    status: str
+    telegram_file_id: str | None
+    created_at: str
+
+
 class Database:
-    def __init__(self, path: Path, initial_balance: int = 0) -> None:
-        self.path = path
+    def __init__(self, location: Path | str, initial_balance: int = 0) -> None:
+        raw_location = str(location)
+        self.postgres = raw_location.startswith(("postgres://", "postgresql://"))
+        self.database_url = (
+            raw_location.replace("postgres://", "postgresql://", 1)
+            if self.postgres
+            else None
+        )
+        self.path = None if self.postgres else Path(location)
         self.initial_balance = initial_balance
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self) -> _Connection:
+        if self.postgres:
+            try:
+                import psycopg
+            except ImportError as exc:
+                raise RuntimeError(
+                    "PostgreSQL uchun psycopg o'rnatilmagan"
+                ) from exc
+            return _Connection(psycopg.connect(self.database_url), True)
+        if self.path is None:
+            raise RuntimeError("SQLite database path topilmadi")
         connection = sqlite3.connect(self.path, timeout=30)
         connection.execute("PRAGMA foreign_keys=ON")
-        return connection
+        return _Connection(connection, False)
 
     async def initialize(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self.path is not None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as db:
-            db.execute("PRAGMA journal_mode=WAL")
-            db.executescript(SCHEMA)
+            if not self.postgres:
+                db.execute("PRAGMA journal_mode=WAL")
+            db.executescript(POSTGRES_SCHEMA if self.postgres else SCHEMA)
+            if self.postgres:
+                db.execute(
+                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS language TEXT "
+                    "NOT NULL DEFAULT 'uz'"
+                )
+            else:
+                try:
+                    db.execute(
+                        "ALTER TABLE users ADD COLUMN language TEXT "
+                        "NOT NULL DEFAULT 'uz'"
+                    )
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
 
     async def ensure_user(
         self,
@@ -162,7 +343,8 @@ class Database:
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             cursor = db.execute(
-                "SELECT balance FROM users WHERE user_id = ?",
+                "SELECT balance FROM users WHERE user_id = ?"
+                + (" FOR UPDATE" if self.postgres else ""),
                 (user_id,),
             )
             row = cursor.fetchone()
@@ -457,18 +639,25 @@ class Database:
                 "INSERT OR IGNORE INTO users (user_id, balance) VALUES (?, 0)",
                 (user_id,),
             )
-            next_id = db.execute(
-                "SELECT COALESCE(MAX(id), 0) + 1 FROM user_accounts"
-            ).fetchone()[0]
-            account_number = f"VIRT-{user_id}-{int(next_id):06d}"
-            db.execute(
-                """
-                INSERT INTO user_accounts (user_id, title, account_number)
-                VALUES (?, ?, ?)
-                """,
-                (user_id, title, account_number),
-            )
-            account_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            account_number = f"VIRT-{user_id}-{secrets.token_hex(3).upper()}"
+            if self.postgres:
+                account_id = db.execute(
+                    """
+                    INSERT INTO user_accounts (user_id, title, account_number)
+                    VALUES (?, ?, ?)
+                    RETURNING id
+                    """,
+                    (user_id, title, account_number),
+                ).fetchone()[0]
+            else:
+                db.execute(
+                    """
+                    INSERT INTO user_accounts (user_id, title, account_number)
+                    VALUES (?, ?, ?)
+                    """,
+                    (user_id, title, account_number),
+                )
+                account_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
             row = db.execute(
                 """
                 SELECT id, title, account_number, status, created_at
@@ -511,21 +700,16 @@ class Database:
                 "INSERT OR IGNORE INTO users (user_id, balance) VALUES (?, 0)",
                 (user_id,),
             )
-            exists = db.execute(
-                "SELECT 1 FROM star_payments WHERE external_id = ?",
-                (external_id,),
-            ).fetchone()
-            if exists:
-                return False
-            db.execute(
+            cursor = db.execute(
                 """
                 INSERT INTO star_payments
                     (user_id, stars, credits, status, external_id)
                 VALUES (?, ?, ?, 'pending', ?)
+                ON CONFLICT(external_id) DO NOTHING
                 """,
                 (user_id, stars, credits, external_id),
             )
-            return True
+            return cursor.rowcount > 0
 
     async def confirm_star_payment(
         self,
@@ -539,7 +723,8 @@ class Database:
                 SELECT user_id, credits, status
                 FROM star_payments
                 WHERE external_id = ?
-                """,
+                """
+                + (" FOR UPDATE" if self.postgres else ""),
                 (external_id,),
             ).fetchone()
             if not row:
@@ -581,3 +766,528 @@ class Database:
                 (user_id,),
             ).fetchone()
             return True, int(row[0])
+
+    async def get_language(self, user_id: int) -> str:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT language FROM users WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            return str(row[0]) if row and row[0] in {"uz", "ru", "en"} else "uz"
+
+    async def set_language(self, user_id: int, language: str) -> None:
+        if language not in {"uz", "ru", "en"}:
+            raise ValueError("Unsupported language")
+        with self._connect() as db:
+            db.execute(
+                "INSERT OR IGNORE INTO users (user_id, balance) VALUES (?, 0)",
+                (user_id,),
+            )
+            db.execute(
+                "UPDATE users SET language = ?, updated_at = CURRENT_TIMESTAMP "
+                "WHERE user_id = ?",
+                (language, user_id),
+            )
+
+    async def is_premium(self, user_id: int) -> bool:
+        with self._connect() as db:
+            row = db.execute(
+                """
+                SELECT expires_at
+                FROM subscriptions
+                WHERE user_id = ? AND status = 'active'
+                """,
+                (user_id,),
+            ).fetchone()
+            return bool(row and int(row[0]) > int(time.time()))
+
+    async def premium_until(self, user_id: int) -> int | None:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT expires_at FROM subscriptions WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            return int(row[0]) if row else None
+
+    async def activate_premium(
+        self,
+        user_id: int,
+        *,
+        stars: int,
+        charge_id: str,
+        period_seconds: int = 30 * 24 * 60 * 60,
+    ) -> int:
+        now = int(time.time())
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "INSERT OR IGNORE INTO users (user_id, balance) VALUES (?, 0)",
+                (user_id,),
+            )
+            duplicate = db.execute(
+                "SELECT 1 FROM subscription_payments WHERE charge_id = ?",
+                (charge_id,),
+            ).fetchone()
+            existing = db.execute(
+                "SELECT expires_at FROM subscriptions WHERE user_id = ?"
+                + (" FOR UPDATE" if self.postgres else ""),
+                (user_id,),
+            ).fetchone()
+            if duplicate and existing:
+                return int(existing[0])
+            base = max(now, int(existing[0])) if existing else now
+            expires_at = base + period_seconds
+            db.execute(
+                """
+                INSERT INTO subscription_payments (charge_id, user_id, stars)
+                VALUES (?, ?, ?)
+                ON CONFLICT(charge_id) DO NOTHING
+                """,
+                (charge_id, user_id, stars),
+            )
+            db.execute(
+                """
+                INSERT INTO subscriptions
+                    (user_id, status, expires_at, charge_id, stars)
+                VALUES (?, 'active', ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    status = 'active',
+                    expires_at = excluded.expires_at,
+                    charge_id = excluded.charge_id,
+                    stars = excluded.stars,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (user_id, expires_at, charge_id, stars),
+            )
+            return expires_at
+
+    async def reserve_daily_use(self, user_id: int, limit: int) -> tuple[bool, int]:
+        if await self.is_premium(user_id):
+            return True, -1
+        usage_date = datetime.now(UTC).date().isoformat()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if self.postgres:
+                row = db.execute(
+                    """
+                    INSERT INTO daily_usage (user_id, usage_date, count)
+                    VALUES (?, ?, 1)
+                    ON CONFLICT(user_id, usage_date) DO UPDATE SET
+                        count = daily_usage.count + 1
+                    WHERE daily_usage.count < ?
+                    RETURNING count
+                    """,
+                    (user_id, usage_date, limit),
+                ).fetchone()
+                if not row:
+                    return False, 0
+                used = int(row[0])
+                return True, max(0, limit - used)
+            row = db.execute(
+                "SELECT count FROM daily_usage WHERE user_id = ? AND usage_date = ?",
+                (user_id, usage_date),
+            ).fetchone()
+            used = int(row[0]) if row else 0
+            if used >= limit:
+                return False, 0
+            db.execute(
+                """
+                INSERT INTO daily_usage (user_id, usage_date, count)
+                VALUES (?, ?, 1)
+                ON CONFLICT(user_id, usage_date) DO UPDATE SET
+                    count = daily_usage.count + 1
+                """,
+                (user_id, usage_date),
+            )
+            return True, max(0, limit - used - 1)
+
+    async def release_daily_use(self, user_id: int) -> None:
+        usage_date = datetime.now(UTC).date().isoformat()
+        with self._connect() as db:
+            db.execute(
+                """
+                UPDATE daily_usage
+                SET count = CASE WHEN count > 0 THEN count - 1 ELSE 0 END
+                WHERE user_id = ? AND usage_date = ?
+                """,
+                (user_id, usage_date),
+            )
+
+    async def create_download(
+        self,
+        user_id: int,
+        *,
+        source_url: str | None,
+        media_type: str,
+        quality: str = "",
+        title: str = "",
+        status: str = "queued",
+    ) -> int:
+        with self._connect() as db:
+            if self.postgres:
+                row = db.execute(
+                    """
+                    INSERT INTO downloads
+                        (user_id, source_url, media_type, quality, title, status)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    RETURNING id
+                    """,
+                    (user_id, source_url, media_type, quality, title, status),
+                ).fetchone()
+                return int(row[0])
+            cursor = db.execute(
+                """
+                INSERT INTO downloads
+                    (user_id, source_url, media_type, quality, title, status)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (user_id, source_url, media_type, quality, title, status),
+            )
+            return int(cursor.lastrowid)
+
+    async def finish_download(
+        self,
+        download_id: int,
+        *,
+        status: str,
+        telegram_file_id: str | None = None,
+        title: str = "",
+        error_message: str | None = None,
+    ) -> None:
+        with self._connect() as db:
+            db.execute(
+                """
+                UPDATE downloads
+                SET status = ?, telegram_file_id = ?, title = ?,
+                    error_message = ?, completed_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (status, telegram_file_id, title, error_message, download_id),
+            )
+
+    async def recent_downloads(
+        self,
+        user_id: int,
+        limit: int = 20,
+    ) -> list[DownloadRecord]:
+        with self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT id, source_url, media_type, quality, title, status,
+                    telegram_file_id, created_at
+                FROM downloads
+                WHERE user_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (user_id, limit),
+            ).fetchall()
+            return [
+                DownloadRecord(
+                    id=int(row[0]),
+                    source_url=str(row[1]) if row[1] else None,
+                    media_type=str(row[2]),
+                    quality=str(row[3]),
+                    title=str(row[4]),
+                    status=str(row[5]),
+                    telegram_file_id=str(row[6]) if row[6] else None,
+                    created_at=str(row[7]),
+                )
+                for row in rows
+            ]
+
+    async def get_download(self, user_id: int, download_id: int) -> DownloadRecord | None:
+        with self._connect() as db:
+            row = db.execute(
+                """
+                SELECT id, source_url, media_type, quality, title, status,
+                    telegram_file_id, created_at
+                FROM downloads
+                WHERE user_id = ? AND id = ?
+                """,
+                (user_id, download_id),
+            ).fetchone()
+            if not row:
+                return None
+            return DownloadRecord(
+                id=int(row[0]),
+                source_url=str(row[1]) if row[1] else None,
+                media_type=str(row[2]),
+                quality=str(row[3]),
+                title=str(row[4]),
+                status=str(row[5]),
+                telegram_file_id=str(row[6]) if row[6] else None,
+                created_at=str(row[7]),
+            )
+
+    async def apply_referral(
+        self,
+        invitee_id: int,
+        inviter_id: int,
+        *,
+        inviter_reward: int,
+        invitee_reward: int,
+    ) -> bool:
+        if invitee_id == inviter_id:
+            return False
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "INSERT OR IGNORE INTO users (user_id, balance) VALUES (?, 0)",
+                (invitee_id,),
+            )
+            db.execute(
+                "INSERT OR IGNORE INTO users (user_id, balance) VALUES (?, 0)",
+                (inviter_id,),
+            )
+            inserted = db.execute(
+                "INSERT OR IGNORE INTO referrals (invitee_id, inviter_id) "
+                "VALUES (?, ?)",
+                (invitee_id, inviter_id),
+            )
+            if inserted.rowcount == 0:
+                return False
+            for user_id, amount, description in (
+                (inviter_id, inviter_reward, "Referral bonusi"),
+                (invitee_id, invitee_reward, "Yangi foydalanuvchi bonusi"),
+            ):
+                if amount <= 0:
+                    continue
+                db.execute(
+                    "UPDATE users SET balance = balance + ?, "
+                    "updated_at = CURRENT_TIMESTAMP WHERE user_id = ?",
+                    (amount, user_id),
+                )
+                db.execute(
+                    """
+                    INSERT INTO transactions (user_id, amount, kind, description)
+                    VALUES (?, ?, 'referral', ?)
+                    """,
+                    (user_id, amount, description),
+                )
+            return True
+
+    async def referral_stats(self, user_id: int) -> tuple[int, int]:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT COUNT(*) FROM referrals WHERE inviter_id = ?",
+                (user_id,),
+            ).fetchone()
+            count = int(row[0]) if row else 0
+            earned = db.execute(
+                """
+                SELECT COALESCE(SUM(amount), 0)
+                FROM transactions
+                WHERE user_id = ? AND kind = 'referral'
+                """,
+                (user_id,),
+            ).fetchone()
+            return count, int(earned[0]) if earned else 0
+
+    async def create_promo(self, code: str, credits: int, max_uses: int) -> None:
+        normalized = code.strip().upper()
+        if not normalized or credits <= 0 or max_uses <= 0:
+            raise ValueError("Promo qiymatlari noto'g'ri")
+        with self._connect() as db:
+            db.execute(
+                """
+                INSERT INTO promo_codes (code, credits, max_uses, uses, active)
+                VALUES (?, ?, ?, 0, 1)
+                ON CONFLICT(code) DO UPDATE SET
+                    credits = excluded.credits,
+                    max_uses = excluded.max_uses,
+                    active = 1
+                """,
+                (normalized, credits, max_uses),
+            )
+
+    async def redeem_promo(self, user_id: int, code: str) -> tuple[bool, str, int]:
+        normalized = code.strip().upper()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            promo = db.execute(
+                """
+                SELECT credits, max_uses, uses, active
+                FROM promo_codes WHERE code = ?
+                """
+                + (" FOR UPDATE" if self.postgres else ""),
+                (normalized,),
+            ).fetchone()
+            if not promo or not bool(promo[3]):
+                return False, "Promo kod topilmadi", 0
+            if int(promo[2]) >= int(promo[1]):
+                return False, "Promo kod limiti tugagan", 0
+            if db.execute(
+                "SELECT 1 FROM promo_redemptions WHERE code = ? AND user_id = ?",
+                (normalized, user_id),
+            ).fetchone():
+                return False, "Bu promo kodni oldin ishlatgansiz", 0
+            credits = int(promo[0])
+            db.execute(
+                "INSERT OR IGNORE INTO users (user_id, balance) VALUES (?, 0)",
+                (user_id,),
+            )
+            db.execute(
+                "INSERT INTO promo_redemptions (code, user_id) VALUES (?, ?)",
+                (normalized, user_id),
+            )
+            db.execute(
+                "UPDATE promo_codes SET uses = uses + 1 WHERE code = ?",
+                (normalized,),
+            )
+            db.execute(
+                "UPDATE users SET balance = balance + ?, "
+                "updated_at = CURRENT_TIMESTAMP WHERE user_id = ?",
+                (credits, user_id),
+            )
+            db.execute(
+                """
+                INSERT INTO transactions (user_id, amount, kind, description)
+                VALUES (?, ?, 'promo', ?)
+                """,
+                (user_id, credits, f"Promo kod: {normalized}"),
+            )
+            balance = db.execute(
+                "SELECT balance FROM users WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            return True, "Promo kod qabul qilindi", int(balance[0])
+
+    async def create_public_file(
+        self,
+        user_id: int,
+        *,
+        path: str,
+        filename: str,
+        mime_type: str,
+        ttl_seconds: int,
+    ) -> str:
+        token = secrets.token_urlsafe(24)
+        with self._connect() as db:
+            db.execute(
+                """
+                INSERT INTO public_files
+                    (token, user_id, path, filename, mime_type, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    token,
+                    user_id,
+                    path,
+                    filename,
+                    mime_type,
+                    int(time.time()) + ttl_seconds,
+                ),
+            )
+        return token
+
+    async def get_public_file(self, token: str) -> tuple[str, str, str] | None:
+        with self._connect() as db:
+            row = db.execute(
+                """
+                SELECT path, filename, mime_type
+                FROM public_files
+                WHERE token = ? AND expires_at > ?
+                """,
+                (token, int(time.time())),
+            ).fetchone()
+            return (str(row[0]), str(row[1]), str(row[2])) if row else None
+
+    async def log_error(
+        self,
+        context: str,
+        message: str,
+        user_id: int | None = None,
+    ) -> None:
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO error_logs (user_id, context, message) VALUES (?, ?, ?)",
+                (user_id, context[:100], message[-2_000:]),
+            )
+
+    async def admin_stats(self) -> dict[str, int]:
+        now = int(time.time())
+        today = date.today().isoformat()
+        with self._connect() as db:
+            queries = {
+                "users": "SELECT COUNT(*) FROM users",
+                "downloads": "SELECT COUNT(*) FROM downloads",
+                "payments": (
+                    "SELECT COUNT(*) FROM star_payments WHERE status = 'confirmed'"
+                ),
+                "errors": "SELECT COUNT(*) FROM error_logs",
+                "premium": (
+                    "SELECT COUNT(*) FROM subscriptions "
+                    f"WHERE status = 'active' AND expires_at > {now}"
+                ),
+                "today_downloads": (
+                    "SELECT COALESCE(SUM(count), 0) FROM daily_usage "
+                    f"WHERE usage_date = '{today}'"
+                ),
+            }
+            result: dict[str, int] = {}
+            for key, query in queries.items():
+                row = db.execute(query).fetchone()
+                result[key] = int(row[0]) if row else 0
+            return result
+
+    async def admin_users(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT user_id, username, full_name, balance, language, created_at
+                FROM users ORDER BY created_at DESC LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            return [
+                {
+                    "user_id": int(row[0]),
+                    "username": str(row[1] or ""),
+                    "full_name": str(row[2] or ""),
+                    "balance": int(row[3]),
+                    "language": str(row[4]),
+                    "created_at": str(row[5]),
+                }
+                for row in rows
+            ]
+
+    async def admin_errors(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT user_id, context, message, created_at
+                FROM error_logs ORDER BY id DESC LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            return [
+                {
+                    "user_id": int(row[0]) if row[0] else None,
+                    "context": str(row[1]),
+                    "message": str(row[2]),
+                    "created_at": str(row[3]),
+                }
+                for row in rows
+            ]
+
+    async def admin_payments(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT user_id, stars, credits, status, external_id, created_at
+                FROM star_payments ORDER BY id DESC LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            return [
+                {
+                    "user_id": int(row[0]),
+                    "stars": int(row[1]),
+                    "credits": int(row[2]),
+                    "status": str(row[3]),
+                    "external_id": str(row[4]),
+                    "created_at": str(row[5]),
+                }
+                for row in rows
+            ]
