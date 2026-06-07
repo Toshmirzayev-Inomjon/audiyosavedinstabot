@@ -95,7 +95,6 @@ class Settings:
     webapp_host: str
     webapp_port: int
     phone_code_ttl_seconds: int
-    auto_tunnel: bool = True
 
     @property
     def max_download_bytes(self) -> int:
@@ -155,7 +154,6 @@ class Settings:
             webapp_host=os.getenv("WEBAPP_HOST", "0.0.0.0").strip(),
             webapp_port=_webapp_port(),
             phone_code_ttl_seconds=_as_int("PHONE_CODE_TTL_SECONDS", 300),
-            auto_tunnel=_as_bool("AUTO_TUNNEL", True),
         )
         if settings.circle_price < 0 or settings.initial_balance < 0:
             raise ValueError("Balans va narx manfiy bo'lishi mumkin emas")

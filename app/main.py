@@ -98,7 +98,7 @@ async def run() -> None:
     web_runner = await start_web_app(settings=settings, database=database, bot=bot)
     tunnel: QuickTunnel | None = None
     webapp_public_url = settings.webapp_public_url
-    if not webapp_public_url and settings.auto_tunnel:
+    if not webapp_public_url:
         try:
             tunnel = await start_quick_tunnel(settings.webapp_port)
             webapp_public_url = tunnel.url

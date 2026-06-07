@@ -31,11 +31,11 @@ Railway'da `Generate Domain` bosilgandan keyin platforma
 domenni va Railway bergan `PORT`ni avtomatik ishlatadi. Har ishga tushishda
 Telegram'dagi `Open` menu tugmasi joriy WebApp manziliga qayta o'rnatiladi.
 
-Oddiy lokal serverda `WEBAPP_PUBLIC_URL` bo'sh va `AUTO_TUNNEL=true` bo'lsa bot
-`cloudflared` orqali vaqtinchalik `*.trycloudflare.com` HTTPS manzilini o'zi
-yaratadi va Telegram'dagi `Open` tugmasiga o'rnatadi. Docker image ichiga
-`cloudflared` qo'shilgan. Lokal Python bilan ishlatishda `cloudflared` tizimda
-o'rnatilgan bo'lishi kerak. Bu manzil bot har qayta ishga tushganda o'zgaradi.
+Public domen va `WEBAPP_PUBLIC_URL` bo'lmasa bot `cloudflared` orqali vaqtinchalik
+`*.trycloudflare.com` HTTPS manzilini o'zi yaratadi va Telegram'dagi `Open`
+tugmasiga o'rnatadi. Docker image ichiga `cloudflared` qo'shilgan. Lokal Python
+bilan ishlatishda `cloudflared` tizimda o'rnatilgan bo'lishi kerak. Bu manzil bot
+har qayta ishga tushganda o'zgaradi.
 
 WebApp quyidagilarni qiladi:
 

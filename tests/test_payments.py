@@ -27,7 +27,6 @@ def settings(tmp_path: Path) -> Settings:
         webapp_host="127.0.0.1",
         webapp_port=8080,
         phone_code_ttl_seconds=300,
-        auto_tunnel=False,
     )
 
 
