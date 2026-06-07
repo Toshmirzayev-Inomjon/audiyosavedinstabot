@@ -690,8 +690,19 @@ async def start_web_app(
     app["bot"] = bot
     app["services"] = services
     app["tasks"] = set()
-    bot_info = await bot.get_me()
-    app["bot_username"] = bot_info.username or ""
+    app["bot_username"] = ""
+
+    async def load_bot_username() -> None:
+        try:
+            bot_info = await asyncio.wait_for(bot.get_me(), timeout=10)
+        except Exception:
+            logger.exception("Bot username olishda xato")
+            return
+        app["bot_username"] = bot_info.username or ""
+
+    username_task = asyncio.create_task(load_bot_username())
+    app["tasks"].add(username_task)
+    username_task.add_done_callback(app["tasks"].discard)
     app.add_routes(
         [
             web.get("/", index_handler),

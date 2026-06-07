@@ -139,7 +139,10 @@ async def run() -> None:
         )
 
     try:
-        await configure_bot_profile(bot, webapp_public_url)
+        try:
+            await configure_bot_profile(bot, webapp_public_url)
+        except Exception:
+            logging.exception("Bot profilini sozlashda xato")
         await bot.delete_webhook(drop_pending_updates=False)
         await dispatcher.start_polling(bot)
     finally:
