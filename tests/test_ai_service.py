@@ -2,7 +2,7 @@ import base64
 
 import pytest
 
-from app.services.ai import AIResult, AIService, AIServiceError
+from app.services.ai import AIService
 
 
 def _service() -> AIService:
@@ -41,6 +41,37 @@ async def test_local_provider_answers_without_api_key() -> None:
     assert service.active_provider == "local"
     assert service.configured is True
     assert "Lokal AI rejimi" in result.text
+
+
+@pytest.mark.asyncio
+async def test_local_provider_handles_planned_service_without_api_key() -> None:
+    result = await _local_service().respond(
+        user_input="+500000 oylik, -25000 ovqat, -12000 transport",
+        instructions=(
+            "Service slug: expense_tracker\n"
+            "Service name: Expense Tracker\n"
+            "Service description: Daromad va xarajatlar daftari."
+        ),
+    )
+
+    assert "Expense tracker natijasi" in result.text
+    assert "Daromad" in result.text
+
+
+@pytest.mark.asyncio
+async def test_local_web_search_returns_local_guidance() -> None:
+    result = await _local_service().respond(
+        user_input="Samarqand",
+        instructions=(
+            "Service slug: live_weather\n"
+            "Service name: Live Weather\n"
+            "Service description: Joriy ob-havo."
+        ),
+        web_search=True,
+    )
+
+    assert "Ob-havo lokal rejimi" in result.text
+    assert "Jonli internet qidiruvi o'rniga" in result.text
 
 
 @pytest.mark.asyncio
@@ -120,9 +151,7 @@ def test_gemini_quota_error_is_user_friendly() -> None:
 
 
 @pytest.mark.asyncio
-async def test_auto_provider_falls_back_to_openai_when_gemini_fails(
-    monkeypatch,
-) -> None:
+async def test_auto_provider_uses_local_even_when_external_keys_exist() -> None:
     service = AIService(
         provider="auto",
         openai_api_key="openai-key",
@@ -133,18 +162,10 @@ async def test_auto_provider_falls_back_to_openai_when_gemini_fails(
         gemini_image_model="gemini-image",
     )
 
-    async def broken_gemini(**_kwargs):
-        raise AIServiceError("quota", quota_exceeded=True)
-
-    async def openai_result(**_kwargs):
-        return AIResult(text="OpenAI fallback")
-
-    monkeypatch.setattr(service, "_respond_gemini", broken_gemini)
-    monkeypatch.setattr(service, "_respond_openai", openai_result)
-
     result = await service.respond(
         user_input="salom",
         instructions="",
     )
 
-    assert result.text == "OpenAI fallback"
+    assert service.active_provider == "local"
+    assert "Lokal AI rejimi" in result.text

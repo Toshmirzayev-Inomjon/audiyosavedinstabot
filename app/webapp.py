@@ -453,10 +453,6 @@ async def execute_service_handler(request: web.Request) -> web.Response:
         )
     if not value and item.mode not in {"media", "media_audio"}:
         raise web.HTTPBadRequest(text="Ma'lumot kiriting")
-    if item.mode == "planned":
-        raise web.HTTPNotImplemented(
-            text="Bu xizmat tashqi integratsiya talab qiladi va hozir sozlanmoqda."
-        )
     if item.mode in {"media", "media_audio"}:
         return web.json_response(
             {
@@ -483,7 +479,7 @@ async def execute_service_handler(request: web.Request) -> web.Response:
     services = request.app["services"]
     if not services.ai.configured:
         raise web.HTTPServiceUnavailable(
-            text="AI kaliti Railway Variables bo'limida sozlanmagan."
+            text="AI xizmati vaqtincha ishlamayapti."
         )
     settings: Settings = request.app["settings"]
     ai_limit = (
@@ -511,7 +507,12 @@ async def execute_service_handler(request: web.Request) -> web.Response:
             )
         result = await services.ai.respond(
             user_input=value,
-            instructions=item.prompt,
+            instructions=(
+                f"Service slug: {item.slug}\n"
+                f"Service name: {item.name}\n"
+                f"Service description: {item.description}\n"
+                f"{item.prompt}"
+            ),
             web_search=item.mode == "ai_web",
             domains=item.domains,
         )
@@ -1891,7 +1892,7 @@ WEBAPP_HTML = """<!doctype html>
       if (!item.ready) {
         notice.textContent = item.configured
           ? "Bu servis uchun tashqi integratsiya tayyorlanmoqda."
-          : "AI xizmatlari uchun serverda GEMINI_API_KEY yoki OPENAI_API_KEY sozlanishi kerak.";
+          : "AI xizmati vaqtincha ishlamayapti.";
         button.disabled = true;
       } else {
         notice.textContent = item.mode === "ai_web"

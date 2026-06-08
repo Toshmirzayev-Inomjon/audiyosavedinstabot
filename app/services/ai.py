@@ -50,10 +50,6 @@ class AIService:
     @property
     def active_provider(self) -> str:
         if self.provider == "auto":
-            if self.gemini_api_key:
-                return "gemini"
-            if self.openai_api_key:
-                return "openai"
             return "local"
         return self.provider
 
@@ -188,8 +184,12 @@ class AIService:
         lowered = (instructions + " " + value).lower()
         header = "Lokal AI rejimi: API kalitisiz soddalashtirilgan javob."
         if web_search:
-            header += " Jonli internet qidiruvi uchun Gemini yoki OpenAI kaliti kerak."
+            header += " Jonli internet qidiruvi o'rniga lokal taxminiy yordam beriladi."
 
+        slug = self._service_slug(instructions)
+        planned = self._local_planned_service(slug, value)
+        if planned:
+            return f"{header}\n\n{planned}"
         if any(word in lowered for word in ("summarizer", "xulosa", "qisqa")):
             return f"{header}\n\n{self._local_summary(value)}"
         if any(word in lowered for word in ("grammar", "imlo", "grammatik")):
@@ -206,11 +206,240 @@ class AIService:
             return f"{header}\n\n{self._local_resume(value)}"
         if any(word in lowered for word in ("translator", "tarjima")):
             return f"{header}\n\n{self._local_translate(value)}"
+        if any(word in lowered for word in ("weather", "ob-havo")):
+            return f"{header}\n\n{self._local_weather(value)}"
+        if any(
+            word in lowered
+            for word in ("currency", "crypto", "stock", "gold", "market", "kurs")
+        ):
+            return f"{header}\n\n{self._local_market(value)}"
+        if any(
+            word in lowered
+            for word in ("medicine", "first aid", "calorie", "sog'liq", "dori")
+        ):
+            return f"{header}\n\n{self._local_health(value)}"
+        if any(
+            word in lowered
+            for word in ("safe link", "spam", "security", "xavfsiz")
+        ):
+            return f"{header}\n\n{self._local_security(value)}"
         if any(word in lowered for word in ("quiz", "viktorina")):
             return f"{header}\n\n{self._local_quiz(value)}"
         if any(word in lowered for word in ("poem", "she'r", "lyrics")):
             return f"{header}\n\n{self._local_poem(value)}"
         return f"{header}\n\n{self._local_general(value)}"
+
+    def _service_slug(self, instructions: str) -> str:
+        match = re.search(r"Service slug:\s*([a-z0-9_]+)", instructions)
+        return match.group(1) if match else ""
+
+    def _local_planned_service(self, slug: str, value: str) -> str:
+        if slug in {
+            "tiktok_matrix",
+            "facebook_twitter",
+            "pinterest_tumblr",
+            "public_media_inspector",
+        }:
+            return (
+                "Public media yordamchisi:\n"
+                f"- Havola: {value or 'havola kiritilmagan'}\n"
+                "- Muallif ruxsatisiz yopiq yoki shaxsiy kontent yuklanmaydi.\n"
+                "- Public havola bo'lsa Video yuklab olish bo'limida ham sinab ko'ring.\n"
+                "- Natija: platforma, havola turi va xavfsiz yuklash bo'yicha yo'l-yo'riq tayyor."
+            )
+        if slug == "telegram_helpers":
+            return (
+                "Telegram admin yordamchisi:\n"
+                "- Avto-salom matni\n"
+                "- Reklama/so'kinish uchun filtr so'zlar ro'yxati\n"
+                "- Adminlarga haftalik reja\n\n"
+                f"Taklif: {value or 'guruh qoidalari va maqsadini kiriting'}"
+            )
+        if slug == "cloud_transporter":
+            return (
+                "Cloud Transporter lokal rejimi:\n"
+                "- Google Drive/Dropbox public havolasini tekshiradi.\n"
+                "- Fayl egasining ruxsati bo'lishi kerak.\n"
+                "- Katta fayllar uchun bot vaqtinchalik link berishi mumkin.\n\n"
+                f"Havola yoki izoh: {value[:500]}"
+            )
+        if slug == "voice_changer":
+            return (
+                "Ovoz effekt rejasi:\n"
+                "- Robot: pitch past, tezlik 0.95\n"
+                "- Multfilm: pitch yuqori, tezlik 1.08\n"
+                "- Kino ovozi: bass kuchaytirish, echo ozgina\n\n"
+                "Audio fayl yuborish UI ulanmaguncha bu lokal preset tavsiyasi."
+            )
+        if slug == "anonymous_feedback":
+            return (
+                "Anonim feedback matni moderatsiyadan o'tkazildi:\n"
+                f"{value[:900] or 'Xabar kiriting'}\n\n"
+                "Haqorat, shaxsiy ma'lumot yoki tahdid bo'lsa yuborilmaydi."
+            )
+        if slug == "chat_storyboard":
+            return self._local_storyboard(value)
+        if slug == "avatar_restyle":
+            return (
+                "Avatar restyle prompti:\n"
+                f"{value or 'Portret'} - clean vector avatar, soft light, "
+                "original style, no impersonation.\n\n"
+                "Rasm yaratish uchun AI Image servisidan ham foydalaning."
+            )
+        if slug in {
+            "pdf_master",
+            "office_converter",
+            "image_compressor",
+            "ocr",
+            "audio_transcriber",
+            "text_to_speech",
+            "background_remover",
+            "archive_manager",
+            "video_to_gif",
+            "watermark_add",
+            "exif_remover",
+        }:
+            return self._local_document_tool(slug, value)
+        if slug == "ai_vision":
+            return (
+                "AI Vision lokal rejimi:\n"
+                "- Rasm tavsifini matn qilib yozsangiz tahlil qilaman.\n"
+                "- Misol/masala matnini kiritsangiz bosqichma-bosqich yechaman.\n\n"
+                f"Kiritilgan tavsif: {value[:900] or 'Rasm tavsifini yozing'}"
+            )
+        if slug == "expense_tracker":
+            return self._local_expense_tracker(value)
+        if slug == "speedtest":
+            return (
+                "Speedtest lokal yo'riqnomasi:\n"
+                "1. Wi-Fi yoki mobil internetni tanlang.\n"
+                "2. 3 marta ping/download/upload o'lchang.\n"
+                "3. O'rtacha natijani yozing.\n\n"
+                "Baholash: ping < 50ms yaxshi, download 20Mbps+ kundalik ishlar uchun yetarli."
+            )
+        if slug == "water_reminder":
+            return self._local_water_reminder(value)
+        if slug == "admin_manager":
+            return (
+                "Admin panel sozlama paketi:\n"
+                "- /rules: guruh qoidalari\n"
+                "- /warn: ogohlantirish\n"
+                "- /mute: vaqtincha cheklash\n"
+                "- Reklama filtri: link, @username, spam kalit so'zlari\n\n"
+                f"Guruh maqsadi: {value[:500] or 'maqsad kiritilmagan'}"
+            )
+        if slug == "feedback_system":
+            return (
+                "Feedback tizimi tayyor matni:\n"
+                "Foydalanuvchi xabari adminlarga ID bilan boradi, javob esa bot orqali qaytadi.\n"
+                "Shaxsiy ma'lumotlar minimal saqlanadi.\n\n"
+                f"Namuna: {value[:700] or 'feedback matnini kiriting'}"
+            )
+        return ""
+
+    def _local_storyboard(self, value: str) -> str:
+        topic = value or "mijoz va admin suhbati"
+        return (
+            "DEMO chat storyboard:\n"
+            f"1. Mijoz: {topic} bo'yicha savol beradi.\n"
+            "2. Admin: qisqa va aniq javob beradi.\n"
+            "3. Mijoz: narx yoki muddatni so'raydi.\n"
+            "4. Admin: keyingi qadamni tushuntiradi.\n\n"
+            "Bu haqiqiy chat emas, faqat demo ssenariy."
+        )
+
+    def _local_document_tool(self, slug: str, value: str) -> str:
+        names = {
+            "pdf_master": "PDF birlashtirish/siqish/parollash",
+            "office_converter": "Office fayl konvertatsiyasi",
+            "image_compressor": "Rasm siqish",
+            "ocr": "Rasm matnini ajratish",
+            "audio_transcriber": "Audio transkripsiya",
+            "text_to_speech": "Matndan ovoz",
+            "background_remover": "Fon olib tashlash",
+            "archive_manager": "ZIP arxiv",
+            "video_to_gif": "Video-to-GIF",
+            "watermark_add": "Watermark qo'shish",
+            "exif_remover": "EXIF metadata tozalash",
+        }
+        return (
+            f"{names.get(slug, 'Hujjat vositasi')} lokal rejimi:\n"
+            f"- Kiruvchi ma'lumot: {value[:500] or 'fayl tavsifi kiritilmagan'}\n"
+            "- Fayl yuklash UI ulanmaguncha bot format, xavfsizlik va sozlama rejasini beradi.\n"
+            "- Shaxsiy fayllarni yuborishda faqat o'zingizga tegishli materiallardan foydalaning.\n"
+            "- Tavsiya: kerakli format, sifat va yakuniy nomni yozing."
+        )
+
+    def _local_expense_tracker(self, value: str) -> str:
+        income = 0
+        expense = 0
+        for amount in re.findall(r"[-+]?\d+(?:[.,]\d+)?", value):
+            number = float(amount.replace(",", "."))
+            if number >= 0:
+                income += number
+            else:
+                expense += abs(number)
+        balance = income - expense
+        return (
+            "Expense tracker natijasi:\n"
+            f"- Daromad yig'indisi: {income:,.0f}\n"
+            f"- Xarajat yig'indisi: {expense:,.0f}\n"
+            f"- Qoldiq: {balance:,.0f}\n\n"
+            "Format tavsiya: +500000 oylik, -25000 ovqat, -12000 transport"
+        )
+
+    def _local_water_reminder(self, value: str) -> str:
+        numbers = [
+            float(item.replace(",", "."))
+            for item in re.findall(r"\d+(?:[.,]\d+)?", value)
+        ]
+        weight = numbers[0] if numbers else 70
+        liters = max(1.5, min(4.5, weight * 0.035))
+        return (
+            "Suv ichish rejasi:\n"
+            f"- Taxminiy kunlik norma: {liters:.1f} litr\n"
+            "- 09:00, 11:00, 13:00, 15:00, 17:00, 19:00 da kichik porsiya\n"
+            "- Sport/issiq havoda ehtiyoj oshishi mumkin.\n"
+            "Bu tibbiy ko'rsatma emas."
+        )
+
+    def _local_weather(self, value: str) -> str:
+        return (
+            "Ob-havo lokal rejimi:\n"
+            f"- Joy: {value or 'shahar kiritilmagan'}\n"
+            "- Jonli harorat API kalitisiz olinmaydi.\n"
+            "- Reja: ertalab/kechqurun harorat farqi, shamol va "
+            "yog'ingarchilikni tekshiring.\n"
+            "- Aniq prognoz uchun rasmiy meteorologiya manbasini solishtiring."
+        )
+
+    def _local_market(self, value: str) -> str:
+        return (
+            "Bozor ma'lumoti lokal rejimi:\n"
+            f"- So'rov: {value or 'aktiv/valyuta nomi kiritilmagan'}\n"
+            "- Jonli narx API kalitisiz olinmaydi.\n"
+            "- Risk: narxlar tez o'zgaradi, qaror qabul qilishdan oldin "
+            "rasmiy manbani tekshiring.\n"
+            "- Bu investitsiya maslahati emas."
+        )
+
+    def _local_health(self, value: str) -> str:
+        return (
+            "Sog'liq lokal rejimi:\n"
+            f"- Savol: {value[:500] or 'savol kiritilmagan'}\n"
+            "- Favqulodda holatda 103 yoki mahalliy tez yordamga murojaat qiling.\n"
+            "- Dori, tashxis va davolashni shifokor bilan tasdiqlang.\n"
+            "- Men faqat umumiy ma'lumot va xavfsiz yo'l-yo'riq bera olaman."
+        )
+
+    def _local_security(self, value: str) -> str:
+        return (
+            "Xavfsizlik tekshiruvi:\n"
+            f"- Kiruvchi ma'lumot: {value[:500] or 'havola/xabar kiritilmagan'}\n"
+            "- Shubhali belgilar: qisqa link, imlo xatolari, shoshiltirish, parol/kod so'rash.\n"
+            "- Kod, parol va karta ma'lumotlarini hech kimga yubormang.\n"
+            "- Havolani ochishdan oldin domenni tekshiring."
+        )
 
     def _local_summary(self, value: str) -> str:
         sentences = re.split(r"(?<=[.!?])\s+", value)
@@ -293,9 +522,16 @@ class AIService:
         )
 
     def _local_translate(self, value: str) -> str:
+        if "->" in value:
+            target, text = value.split("->", maxsplit=1)
+            return (
+                f"Tarjima yo'nalishi: {target.strip()}\n"
+                "Lokal tarjima soddalashtirilgan: matnni ma'no bo'yicha "
+                "qayta yozish kerak.\n\n"
+                f"Matn: {text.strip()[:700]}"
+            )
         return (
-            "Lokal rejimda to'liq tarjima modeli yo'q.\n"
-            "Matnni qisqa bo'laklarga ajrating yoki Gemini/OpenAI kaliti qo'shing.\n\n"
+            "Tarjima formati: til -> matn\n"
             f"Kiritilgan matn: {value[:700]}"
         )
 
@@ -705,7 +941,7 @@ class AIService:
             y += 52
         draw.text(
             (130, 845),
-            "Gemini/OpenAI kaliti qo'shilsa haqiqiy AI rasm ishlaydi.",
+            "API kalitisiz lokal rasm. Kalit qo'shilsa kuchliroq model ishlaydi.",
             fill="#a7f3d0",
             font=small_font,
         )

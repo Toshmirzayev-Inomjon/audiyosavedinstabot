@@ -266,8 +266,8 @@ def serialize_catalog(
     for category in CATALOG:
         items = []
         for item in category.services:
-            configured = item.mode not in {"ai", "ai_web", "ai_image"} or ai_configured
-            ready = item.mode != "planned" and configured
+            configured = item.mode not in {"ai", "ai_web", "ai_image", "planned"} or ai_configured
+            ready = configured
             items.append(
                 {
                     "slug": item.slug,

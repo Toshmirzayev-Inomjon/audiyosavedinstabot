@@ -52,6 +52,27 @@ async def configure_bot_profile(bot: Bot, webapp_public_url: str | None) -> None
         await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
 
 
+async def run_polling_forever(
+    *,
+    bot: Bot,
+    dispatcher: Dispatcher,
+    webapp_public_url: str | None,
+) -> None:
+    while True:
+        try:
+            try:
+                await configure_bot_profile(bot, webapp_public_url)
+            except Exception:
+                logging.exception("Bot profilini sozlashda xato")
+            await bot.delete_webhook(drop_pending_updates=False)
+            await dispatcher.start_polling(bot)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.exception("Bot polling to'xtadi, 30 soniyadan keyin qayta urinadi")
+            await asyncio.sleep(30)
+
+
 async def run() -> None:
     settings = Settings.load()
     settings.prepare_directories()
@@ -139,12 +160,11 @@ async def run() -> None:
         )
 
     try:
-        try:
-            await configure_bot_profile(bot, webapp_public_url)
-        except Exception:
-            logging.exception("Bot profilini sozlashda xato")
-        await bot.delete_webhook(drop_pending_updates=False)
-        await dispatcher.start_polling(bot)
+        await run_polling_forever(
+            bot=bot,
+            dispatcher=dispatcher,
+            webapp_public_url=webapp_public_url,
+        )
     finally:
         if tunnel is not None:
             await tunnel.stop()

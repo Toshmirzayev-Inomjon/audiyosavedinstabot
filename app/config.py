@@ -109,7 +109,7 @@ class Settings:
     tariff_premium_stars: int = 50
     tariff_standard_daily_limit: int = 15
     tariff_period_days: int = 30
-    ai_provider: str = "auto"
+    ai_provider: str = "local"
     openai_api_key: str | None = None
     openai_model: str = "gpt-5.5"
     openai_image_model: str = "gpt-image-1.5"
@@ -198,7 +198,7 @@ class Settings:
                 15,
             ),
             tariff_period_days=_as_int("TARIFF_PERIOD_DAYS", 30),
-            ai_provider=os.getenv("AI_PROVIDER", "auto").strip().lower(),
+            ai_provider=os.getenv("AI_PROVIDER", "local").strip().lower(),
             openai_api_key=os.getenv("OPENAI_API_KEY", "").strip() or None,
             openai_model=os.getenv("OPENAI_MODEL", "gpt-5.5").strip(),
             openai_image_model=os.getenv(

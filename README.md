@@ -22,7 +22,7 @@ Bot quyidagilarni bajaradi:
 - O'zbek, rus va ingliz tilidagi asosiy menyu
 - Mini App orqali yuklash, tarix, profil, balans va admin panel
 - Mini App ichida 10 kategoriya va 100 ta tartibli servis katalogi
-- Bitta AI kaliti orqali AI Chat, AI+Web va AI Image xizmatlari
+- API kalitisiz lokal AI fallback, xohishga ko'ra Gemini/OpenAI kuchaytirish
 - Admin orqali `/addbalance USER_ID SUMMA` komandasi
 - Telegram WebApp orqali profil, telefon tasdiqlash kodi va ichki virtual hisoblar
 
@@ -77,11 +77,10 @@ natija `/files/<token>` vaqtinchalik HTTPS havolasi orqali beriladi. Railway
 redeploy vaqtida ephemeral fayl o'chishi mumkin, shuning uchun katta fayl
 havolasi uzoq muddatli saqlash emas.
 
-AI xizmatlari API kalitisiz ham lokal fallback bilan ishlaydi. Kuchliroq AI
-kerak bo'lsa Railway `Variables` bo'limiga Gemini yoki OpenAI kalitini kiriting:
+AI xizmatlari API kalitisiz lokal rejimda ishlaydi. Railway'da shuni qoldiring:
 
 ```env
-AI_PROVIDER=auto
+AI_PROVIDER=local
 GEMINI_API_KEY=
 GEMINI_MODEL=gemini-flash-latest
 GEMINI_IMAGE_MODEL=gemini-2.5-flash-image
@@ -89,20 +88,13 @@ STANDARD_AI_DAILY_LIMIT=20
 PREMIUM_AI_DAILY_LIMIT=100
 ```
 
-`AI_PROVIDER=auto` bo'lsa `GEMINI_API_KEY` mavjud paytda Gemini ishlaydi.
-OpenAI ishlatmoqchi bo'lsangiz `OPENAI_API_KEY`, `OPENAI_MODEL` va
-`OPENAI_IMAGE_MODEL` qiymatlarini ham berishingiz mumkin.
-Gemini kvotasi yoki billing limiti tugasa, auto rejimda OpenAI kaliti mavjud
-bo'lsa bot avtomatik OpenAI'ga o'tadi.
-Hech qanday kalit bo'lmasa `local` rejim ishlaydi: bu real internet qidiruvi
-yoki katta AI modeli emas, lekin matnli servislar va oddiy rasm generatsiyasi
-xato bermasdan javob qaytaradi.
+`local` rejim real internet qidiruvi yoki katta AI modeli emas, lekin matnli
+servislar va oddiy rasm generatsiyasi API kalitisiz xato bermasdan javob
+qaytaradi. Gemini/OpenAI keyinchalik faqat ixtiyoriy kuchaytirish uchun.
 
-Bitta AI kaliti barcha AI servislariga ishlatiladi. Bepul tarifda faqat
+Local AI barcha AI servislariga fallback bo'ladi. Bepul tarifda faqat
 MP3/musiqa yuklash ochiq. Standard tarif katalogning taxminan yarmiga, Premium
-esa barcha xavfsiz va integratsiyasi tayyor servislarga ruxsat beradi. Tashqi
-fayl konverteri yoki alohida provayder talab qiladigan servislar katalogda
-`sozlash kerak` holatida ko'rsatiladi.
+esa barcha xavfsiz servislarga ruxsat beradi.
 
 Promo kod yaratish:
 

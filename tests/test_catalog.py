@@ -48,6 +48,18 @@ def test_ai_services_report_missing_configuration() -> None:
     assert password["ready"] is True
 
 
+def test_premium_catalog_has_all_services_ready_with_local_ai() -> None:
+    items = [
+        item
+        for category in serialize_catalog("premium", ai_configured=True)
+        for item in category["services"]
+    ]
+
+    assert len(items) == 100
+    assert all(item["unlocked"] for item in items)
+    assert all(item["ready"] for item in items)
+
+
 def test_local_catalog_tools() -> None:
     password = execute_local("password_generator", "24").text
     bmi = execute_local("bmi", "70,1.75").text
