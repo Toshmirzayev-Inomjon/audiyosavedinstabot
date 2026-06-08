@@ -16,6 +16,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
+COPY bot ./bot
 RUN mkdir -p /app/data /app/tmp
 
 CMD ["python", "-m", "app.main"]

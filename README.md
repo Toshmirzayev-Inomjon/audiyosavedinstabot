@@ -26,6 +26,77 @@ Bot quyidagilarni bajaradi:
 - Admin orqali `/addbalance USER_ID SUMMA` komandasi
 - Telegram WebApp orqali profil, telefon tasdiqlash kodi va ichki virtual hisoblar
 
+## Production Super App arxitekturasi
+
+Repo ichida ikki ishga tushirish yo'li bor:
+
+- `app/` - hozir Railway'da ishlayotgan bot, mavjud balans/tarif/WebApp logikasi.
+- `bot/` - high-traffic poydevor: Aiogram 3, PostgreSQL Async SQLAlchemy, Redis,
+  Celery worker, yt-dlp, FFmpeg, file_id cache va Sentry.
+
+Yangi scalable stack papkalari:
+
+```text
+bot/
+├── config.py
+├── main.py
+├── database/
+├── handlers/
+├── services/
+└── tasks/
+```
+
+`bot.main` faqat Telegram update'larini qabul qiladi va og'ir ishni Redis/Celery
+navbatiga beradi. `bot.tasks.media_tasks` worker esa media yuklash, FFmpeg bilan
+qayta ishlash, Telegramga yuborish va `file_id`ni PostgreSQL cache jadvaliga
+saqlash bilan shug'ullanadi. Shu sababli katta yuklama bot polling/webhook oqimini
+bloklamaydi.
+
+Super App'ni lokal Docker bilan ishga tushirish:
+
+```bash
+cp .env.example .env
+docker compose -f docker-compose.superapp.yml up -d --build
+docker compose -f docker-compose.superapp.yml logs -f bot worker
+```
+
+Worker alohida ishga tushirilsa:
+
+```bash
+celery -A bot.tasks.celery_app.celery_app worker --loglevel=INFO
+```
+
+Asosiy Super App env sozlamalari:
+
+```env
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/media_bot
+REDIS_URL=redis://redis:6379/0
+MAX_DOWNLOAD_MB=1500
+MAX_DURATION_SECONDS=14400
+CONCURRENT_DOWNLOADS=4
+WORKER_CONCURRENCY=2
+ROTATING_PROXIES=
+ROTATING_PROXY_FILE=
+SENTRY_DSN=
+AUDD_API_KEY=
+```
+
+`ROTATING_PROXIES` vergul bilan beriladi yoki `ROTATING_PROXY_FILE` orqali fayldan
+o'qiladi. Platforma cheklovlari kuchli bo'lsa, yt-dlp cookies uchun
+`YTDLP_COOKIES_FILE` ham beriladi.
+
+Kesh ishlashi: birinchi foydalanuvchi havolani yuklaganda bot natijadagi Telegram
+`file_id`ni `media_cache` jadvaliga yozadi. Xuddi shu URL, format va sifat qayta
+yuborilsa, worker ishga tushmaydi, bot file_id orqali darhol qayta jo'natadi.
+
+Shazam: `AUDD_API_KEY` bo'lsa ovozli xabar AudD orqali taniladi. Kalit bo'lmasa bot
+crash bo'lmaydi, foydalanuvchiga API ulanmaganini tushunarli qilib qaytaradi.
+
+Eslatma: Dockerfile hozir Railway'dagi mavjud servis buzilmasligi uchun
+`python -m app.main` bilan qolgan. Super App stackni serverga alohida qo'yganda
+service command `python -m bot.main`, worker command esa yuqoridagi Celery command
+bo'lishi kerak.
+
 Stars paketlari `.env` ichidagi `STAR_PACKAGES` orqali boshqariladi. Foydalanuvchi
 `O'zim kiritaman` tugmasi orqali ham hisob to'ldira oladi; standart minimal miqdor
 `CUSTOM_STAR_MIN=5`, custom kurs esa `STAR_CREDIT_RATE=1000`.
