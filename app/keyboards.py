@@ -7,56 +7,43 @@ from aiogram.types import (
 
 VIDEO_BUTTON = "📥 Video yuklab olish"
 MP3_BUTTON = "🎵 MP3 yuklab olish"
-CIRCLE_BUTTON = "⭕ Videoni aylana qilish (pullik)"
+MUSIC_SEARCH_BUTTON = "🔎 Musiqa qidirish"
+CIRCLE_BUTTON = "⭕ Videoni aylana qilish"
 RECTANGLE_BUTTON = "🖼 Aylanani oddiy video qilish"
-BALANCE_BUTTON = "💰 Balansim"
-BUY_BUTTON = "⭐ Hisob to'ldirish"
 CANCEL_BUTTON = "❌ Bekor qilish"
-CUSTOM_STARS_BUTTON = "✍️ O'zim kiritaman"
 HISTORY_BUTTON = "🕘 Yuklash tarixi"
-PREMIUM_BUTTON = "💎 Premium"
-TARIFF_BUTTON = "📋 Tariflar"
 LANGUAGE_BUTTON = "🌐 Til / Language"
 
 MENU_LABELS = {
     "uz": {
         "video": VIDEO_BUTTON,
         "mp3": MP3_BUTTON,
+        "music_search": MUSIC_SEARCH_BUTTON,
         "circle": CIRCLE_BUTTON,
         "rectangle": RECTANGLE_BUTTON,
-        "balance": BALANCE_BUTTON,
-        "buy": BUY_BUTTON,
         "history": HISTORY_BUTTON,
-        "premium": PREMIUM_BUTTON,
-        "tariff": TARIFF_BUTTON,
         "language": LANGUAGE_BUTTON,
-        "placeholder": "Quyidagi xizmatlardan birini tanlang",
+        "placeholder": "Link yoki musiqa nomi yuboring",
     },
     "ru": {
         "video": "📥 Скачать видео",
         "mp3": "🎵 Скачать MP3",
+        "music_search": "🔎 Поиск музыки",
         "circle": "⭕ Сделать круглое видео",
         "rectangle": "🖼 Сделать обычное видео",
-        "balance": "💰 Мой баланс",
-        "buy": "⭐ Пополнить баланс",
         "history": "🕘 История загрузок",
-        "premium": "💎 Премиум",
-        "tariff": "📋 Тарифы",
         "language": LANGUAGE_BUTTON,
-        "placeholder": "Выберите услугу",
+        "placeholder": "Отправьте ссылку или название песни",
     },
     "en": {
         "video": "📥 Download video",
         "mp3": "🎵 Download MP3",
+        "music_search": "🔎 Search music",
         "circle": "⭕ Make video note",
         "rectangle": "🖼 Make regular video",
-        "balance": "💰 My balance",
-        "buy": "⭐ Add balance",
         "history": "🕘 Download history",
-        "premium": "💎 Premium",
-        "tariff": "📋 Plans",
         "language": LANGUAGE_BUTTON,
-        "placeholder": "Choose a service",
+        "placeholder": "Send a link or song name",
     },
 }
 
@@ -66,71 +53,15 @@ def main_keyboard(language: str = "uz") -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=labels["video"]), KeyboardButton(text=labels["mp3"])],
-            [KeyboardButton(text=labels["circle"])],
-            [KeyboardButton(text=labels["rectangle"])],
-            [KeyboardButton(text=labels["balance"]), KeyboardButton(text=labels["buy"])],
+            [KeyboardButton(text=labels["music_search"])],
+            [KeyboardButton(text=labels["circle"]), KeyboardButton(text=labels["rectangle"])],
             [
                 KeyboardButton(text=labels["history"]),
-                KeyboardButton(text=labels["tariff"]),
+                KeyboardButton(text=labels["language"]),
             ],
-            [KeyboardButton(text=labels["language"])],
         ],
         resize_keyboard=True,
         input_field_placeholder=labels["placeholder"],
-    )
-
-
-def tariff_keyboard(
-    standard_price: int,
-    premium_price: int,
-    period_days: int = 30,
-) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=f"🆓 Bepul — {period_days} kun",
-                    callback_data="tariff:free",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=f"⚡ Standard — {standard_price:,} so'm",
-                    callback_data="tariff:standard",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=f"💎 Premium — {premium_price:,} so'm",
-                    callback_data="tariff:premium",
-                )
-            ],
-        ]
-    )
-
-
-def tariff_confirm_keyboard(plan_code: str, stars: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="💰 Balansdan to'lash",
-                    callback_data=f"tariff_buy:{plan_code}",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=f"⭐ {stars} Stars bilan to'lash",
-                    callback_data=f"tariff_stars:{plan_code}",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="⬅️ Tariflarga qaytish",
-                    callback_data="tariff:list",
-                )
-            ],
-        ]
     )
 
 
@@ -182,31 +113,4 @@ def cancel_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text=CANCEL_BUTTON)]],
         resize_keyboard=True,
-    )
-
-
-def star_packages_keyboard(
-    packages: tuple[tuple[int, int], ...],
-) -> InlineKeyboardMarkup:
-    rows: list[list[InlineKeyboardButton]] = []
-    for index in range(0, len(packages), 2):
-        row = []
-        for stars, credits in packages[index : index + 2]:
-            row.append(
-                InlineKeyboardButton(
-                    text=f"{stars} ⭐ -> {credits:,} so'm",
-                    callback_data=f"stars:{stars}:{credits}",
-                )
-            )
-        rows.append(row)
-    rows.append(
-        [
-            InlineKeyboardButton(
-                text=CUSTOM_STARS_BUTTON,
-                callback_data="stars_custom",
-            )
-        ]
-    )
-    return InlineKeyboardMarkup(
-        inline_keyboard=rows,
     )

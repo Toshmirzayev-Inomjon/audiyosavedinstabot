@@ -1,251 +1,73 @@
-# Media Downloader Telegram Bot
+# Saved Insta Bot
 
-Bot quyidagilarni bajaradi:
+Telegram bot link orqali video/MP3 yuklaydi, qo'shiq nomi yoki ijrochi nomi
+bo'yicha musiqa qidiradi, video note tayyorlaydi va video note'ni oddiy videoga
+o'tkazadi.
 
-- YouTube va Instagram public havolalaridan video yuklash
-- Telegram post havolasidan media yuklash
-- Botga yuborilgan yoki forward qilingan video/audio faylni qabul qilish
-- Video/audio yoki havolani MP3 formatiga o'tkazish
-- Videoni Telegram aylana video (`video_note`) formatiga o'tkazish
-- Aylana videoni 16:9 to'rtburchak videoga o'tkazish
-- PostgreSQL/SQLite balans, tranzaksiya tarixi, haq yechish va xatoda refund
-- Telegram Stars orqali balans to'ldirish
-- Telegram Stars orqali 30 kunlik avtomatik Premium obuna
-- `/start` va `/tarif` orqali 30 kunlik Bepul, Standard va Premium tariflar
-- Standard/Premium tariflarni ichki balansdan xavfsiz sotib olish
-- 360p, 720p, 1080p va faqat audio sifat tanlash
-- Yuklash navbati, foiz ko'rsatkichi va `/cancel` orqali bekor qilish
-- Yuklash tarixi va Telegram `file_id` orqali qayta yuborish
-- Kunlik bepul limit, promo kod va referral bonuslari
-- PostgreSQL yoki lokal SQLite database
-- Telegram limitidan katta fayl uchun vaqtinchalik HTTPS havola
-- O'zbek, rus va ingliz tilidagi asosiy menyu
-- Mini App orqali yuklash, tarix, profil, balans va admin panel
-- Mini App ichida 10 kategoriya va 100 ta tartibli servis katalogi
-- API kalitisiz lokal AI fallback, xohishga ko'ra Gemini/OpenAI kuchaytirish
-- Admin orqali `/addbalance USER_ID SUMMA` komandasi
-- Telegram WebApp orqali profil, telefon tasdiqlash kodi va ichki virtual hisoblar
+## Asosiy imkoniyatlar
 
-## Production Super App arxitekturasi
+- YouTube, YouTube Music, Instagram, TikTok, SoundCloud, Facebook va X/Twitter linklaridan media yuklash
+- Qo'shiq nomi yoki ijrochi nomi bilan MP3 qidirish (`yt-dlp` `ytsearch1`)
+- Video sifatini tanlash: 360p, 720p, 1080p yoki MP3
+- Video/audio fayldan MP3 qilish
+- Videoni Telegram aylana video (`video_note`) qilish
+- Aylana videoni ortiqcha effektlarsiz oddiy videoga o'tkazish
+- Yuklash tarixi va katta fayllar uchun vaqtinchalik HTTPS link
+- Telegram WebApp: profil, telefon tasdiqlash, parol, profil rasmi va so'rovlar tarixi
+- Admin WebApp: foydalanuvchini ID/username/ism/telefon bo'yicha qidirish va AI obunani qo'lda faollashtirish
 
-Repo ichida ikki ishga tushirish yo'li bor:
+## Pullik oqimlar
 
-- `app/` - hozir Railway'da ishlayotgan bot, mavjud balans/tarif/WebApp logikasi.
-- `bot/` - high-traffic poydevor: Aiogram 3, PostgreSQL Async SQLAlchemy, Redis,
-  Celery worker, yt-dlp, FFmpeg, file_id cache va Sentry.
+Bot ichidagi Stars, balans, avtomatik tarif va promo kod oqimlari olib tashlangan.
+Media yuklash va video note funksiyalari bepul ishlaydi.
 
-Yangi scalable stack papkalari:
+AI qo'shiq yaratish alohida pullik obuna bo'ladi, lekin hozir avtomatik to'lov
+yo'q. Foydalanuvchi adminga murojaat qiladi, admin karta orqali to'lovni
+tekshiradi va WebApp admin panelidan AI obunani qo'lda ochadi.
 
-```text
-bot/
-├── config.py
-├── main.py
-├── database/
-├── handlers/
-├── services/
-└── tasks/
-```
+## Bepul AI bo'yicha real variantlar
 
-`bot.main` faqat Telegram update'larini qabul qiladi va og'ir ishni Redis/Celery
-navbatiga beradi. `bot.tasks.media_tasks` worker esa media yuklash, FFmpeg bilan
-qayta ishlash, Telegramga yuborish va `file_id`ni PostgreSQL cache jadvaliga
-saqlash bilan shug'ullanadi. Shu sababli katta yuklama bot polling/webhook oqimini
-bloklamaydi.
+Haqiqiy "tekin va limitsiz API" amalda yo'q: bepul servislar limit qo'yadi yoki
+keyin pullik bo'ladi. Limitsizga yaqin yo'l - modelni o'z serveringizda yuritish.
+Bunda API uchun pul to'lanmaydi, lekin server CPU/GPU resursi kerak bo'ladi.
 
-Super App'ni lokal Docker bilan ishga tushirish:
+Tavsiya etiladigan local/open-source yo'nalishlar:
 
-```bash
-cp .env.example .env
-docker compose -f docker-compose.superapp.yml up -d --build
-docker compose -f docker-compose.superapp.yml logs -f bot worker
-```
+- Text-to-speech: `Piper`, `Coqui TTS`
+- Ovoz uslubi/effect: `RVC`, `so-vits-svc`
+- Musiqa generatsiya: `MusicGen` yoki `AudioCraft`
+- Oddiy audio effektlar: `ffmpeg` filterlari
 
-Worker alohida ishga tushirilsa:
-
-```bash
-celery -A bot.tasks.celery_app.celery_app worker --loglevel=INFO
-```
-
-Asosiy Super App env sozlamalari:
-
-```env
-DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/media_bot
-REDIS_URL=redis://redis:6379/0
-MAX_DOWNLOAD_MB=1500
-MAX_DURATION_SECONDS=14400
-CONCURRENT_DOWNLOADS=4
-WORKER_CONCURRENCY=2
-ROTATING_PROXIES=
-ROTATING_PROXY_FILE=
-SENTRY_DSN=
-AUDD_API_KEY=
-```
-
-`ROTATING_PROXIES` vergul bilan beriladi yoki `ROTATING_PROXY_FILE` orqali fayldan
-o'qiladi. Platforma cheklovlari kuchli bo'lsa, yt-dlp cookies uchun
-`YTDLP_COOKIES_FILE` ham beriladi.
-
-Kesh ishlashi: birinchi foydalanuvchi havolani yuklaganda bot natijadagi Telegram
-`file_id`ni `media_cache` jadvaliga yozadi. Xuddi shu URL, format va sifat qayta
-yuborilsa, worker ishga tushmaydi, bot file_id orqali darhol qayta jo'natadi.
-
-Shazam: `AUDD_API_KEY` bo'lsa ovozli xabar AudD orqali taniladi. Kalit bo'lmasa bot
-crash bo'lmaydi, foydalanuvchiga API ulanmaganini tushunarli qilib qaytaradi.
-
-Eslatma: Dockerfile hozir Railway'dagi mavjud servis buzilmasligi uchun
-`python -m app.main` bilan qolgan. Super App stackni serverga alohida qo'yganda
-service command `python -m bot.main`, worker command esa yuqoridagi Celery command
-bo'lishi kerak.
-
-Stars paketlari `.env` ichidagi `STAR_PACKAGES` orqali boshqariladi. Foydalanuvchi
-`O'zim kiritaman` tugmasi orqali ham hisob to'ldira oladi; standart minimal miqdor
-`CUSTOM_STAR_MIN=5`, custom kurs esa `STAR_CREDIT_RATE=1000`.
-
-Stars to'lovi kelganda bot avval payment'ni `pending` holatda saqlaydi, 5 soniya
-tekshiruv progressini ko'rsatadi va keyin ichki balansga qo'shadi.
-
-Premium obuna `PREMIUM_STARS` narxida 30 kun ishlaydi va Telegram tomonidan
-avtomatik yangilanadi. Premium foydalanuvchi kunlik limitdan ozod qilinadi va
-1080p sifatni tanlay oladi.
+Avval MVP uchun: matn -> TTS vokal -> fon beat/music loop -> ffmpeg mix. Keyin GPU
+server bo'lsa MusicGen/RVC qo'shiladi.
 
 ## Railway PostgreSQL
 
-Yangilanishda balans va profil yo'qolmasligi uchun Railway loyihasiga PostgreSQL
-qo'shing:
+Balans kerak emas, lekin profil, tarix va AI obuna yo'qolmasligi uchun PostgreSQL
+tavsiya qilinadi:
 
-1. Project ichida `+ Add` -> `Database` -> `PostgreSQL`.
+1. Railway project ichida `+ Add` -> `Database` -> `PostgreSQL`.
 2. Bot servisining `Variables` bo'limida:
 
 ```env
 DATABASE_URL=${{Postgres.DATABASE_URL}}
 ```
 
-`Postgres` qismi Railway yaratgan database servisining nomi bilan bir xil bo'lishi
-kerak. `DATABASE_URL` berilsa bot avtomatik PostgreSQL ishlatadi. Berilmasa lokal
-`DATABASE_PATH` bo'yicha SQLite ishlaydi.
+`DATABASE_URL` bo'lmasa bot lokal SQLite ishlatadi.
 
-Asosiy sozlamalar:
+## WebApp
 
-```env
-MAX_DOWNLOAD_MB=500
-TELEGRAM_UPLOAD_MB=49
-QUEUE_CONCURRENCY=2
-DAILY_FREE_LIMIT=3
-PREMIUM_STARS=100
-TARIFF_STANDARD_PRICE=25000
-TARIFF_PREMIUM_PRICE=50000
-TARIFF_STANDARD_STARS=25
-TARIFF_PREMIUM_STARS=50
-TARIFF_STANDARD_DAILY_LIMIT=15
-TARIFF_PERIOD_DAYS=30
-REFERRAL_REWARD=5000
-REFERRAL_NEW_USER_REWARD=2000
-PUBLIC_FILE_TTL_SECONDS=3600
-```
+Telegram ichidagi `Open` tugmasi `WEBAPP_PUBLIC_URL` orqali ishlaydi. Railway'da
+public domain bo'lsa bot `RAILWAY_PUBLIC_DOMAIN`dan avtomatik foydalanadi.
 
-`MAX_DOWNLOAD_MB` server qayta ishlaydigan hajm. `TELEGRAM_UPLOAD_MB`dan katta
-natija `/files/<token>` vaqtinchalik HTTPS havolasi orqali beriladi. Railway
-redeploy vaqtida ephemeral fayl o'chishi mumkin, shuning uchun katta fayl
-havolasi uzoq muddatli saqlash emas.
-
-AI xizmatlari API kalitisiz lokal rejimda ishlaydi. Railway'da shuni qoldiring:
-
-```env
-AI_PROVIDER=local
-GEMINI_API_KEY=
-GEMINI_MODEL=gemini-flash-latest
-GEMINI_IMAGE_MODEL=gemini-2.5-flash-image
-STANDARD_AI_DAILY_LIMIT=20
-PREMIUM_AI_DAILY_LIMIT=100
-```
-
-`local` rejim real internet qidiruvi yoki katta AI modeli emas, lekin matnli
-servislar va oddiy rasm generatsiyasi API kalitisiz xato bermasdan javob
-qaytaradi. Gemini/OpenAI keyinchalik faqat ixtiyoriy kuchaytirish uchun.
-
-Local AI barcha AI servislariga fallback bo'ladi. Bepul tarifda faqat
-MP3/musiqa yuklash ochiq. Standard tarif katalogning taxminan yarmiga, Premium
-esa barcha xavfsiz servislarga ruxsat beradi.
-
-Promo kod yaratish:
-
-```text
-/createpromo KOD SUMMA ISHLATISH_LIMITI
-```
-
-Foydalanuvchi promo kodni `/promo KOD`, referral linkini `/referral`, tarixni
-`/history`, tariflarni `/tarif`, Stars Premium obunani `/premium` orqali
-boshqaradi. Bepul tarif bir marta 30 kunga beriladi. Standard va Premium
-tariflarini botning ichki balansi yoki Telegram Stars bilan sotib olish mumkin.
-
-## Profil WebApp va xavfsizlik
-
-Profil boshqaruvi bot klaviaturasiga qo'shilmaydi. `WEBAPP_PUBLIC_URL` berilsa bot
-menu tugmasi orqali WebApp ochiladi. Telegram WebApp uchun public HTTPS URL kerak;
-lokal `http://localhost:8080` Telegram ichidan ochilmaydi.
-
-Railway'da `Generate Domain` bosilgandan keyin platforma
-`RAILWAY_PUBLIC_DOMAIN` qiymatini beradi. Bot `WEBAPP_PUBLIC_URL` bo'sh bo'lsa shu
-domenni va Railway bergan `PORT`ni avtomatik ishlatadi. Har ishga tushishda
-Telegram'dagi `Open` menu tugmasi joriy WebApp manziliga qayta o'rnatiladi.
-
-Public domen va `WEBAPP_PUBLIC_URL` bo'lmasa bot `cloudflared` orqali vaqtinchalik
-`*.trycloudflare.com` HTTPS manzilini o'zi yaratadi va Telegram'dagi `Open`
-tugmasiga o'rnatadi. Docker image ichiga `cloudflared` qo'shilgan. Lokal Python
-bilan ishlatishda `cloudflared` tizimda o'rnatilgan bo'lishi kerak. Bu manzil bot
-har qayta ishga tushganda o'zgaradi.
-
-WebApp quyidagilarni qiladi:
-
-- Telegram WebApp `initData` imzosini bot token orqali tekshiradi.
-- Ism, familiya, telefon va parol sozlash imkonini beradi.
-- Telefonni tasdiqlash uchun foydalanuvchining Telegram chatiga 6 xonali kod yuboradi.
-- Parolni faqat PBKDF2 hash ko'rinishida saqlaydi.
-- Ichki virtual hisob yaratish va olib tashlash imkonini beradi.
-
-Bu real bank karta/hisob ochmaydi. Real bank karta, karta orqali pul chiqarish yoki
-Stars'ni avtomatik fiat pulga aylantirish uchun alohida to'lov provayderi, KYC va
-bank integratsiyasi kerak.
-
-Standart sozlamada media davomiyligi 11 soatgacha. Telegramga 49 MB gacha fayl
-yuboriladi, undan katta natijaga vaqtinchalik yuklash havolasi yaratiladi.
-
-## 2 GB Local Bot API rejimi
-
-Telegram cloud Bot API 50 MB bilan cheklangan. Taxminan 2 GB fayl yuborish uchun
-Local Bot API server ishlatiladi:
-
-1. `https://my.telegram.org` saytidan `api_id` va `api_hash` oling.
-2. `.env` ichida `TELEGRAM_API_ID` va `TELEGRAM_API_HASH`ni kiriting.
-3. Botni cloud API'dan chiqarish uchun bir marta `logOut` metodini chaqiring.
-4. Local konfiguratsiyani ishga tushiring:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
-```
-
-Local rejim `MAX_DOWNLOAD_MB=1990` bilan ishlaydi. Katta media uchun diskda fayl
-hajmidan kamida 2-3 baravar ko'p vaqtinchalik bo'sh joy bo'lishi tavsiya qilinadi.
-
-## Muhim xavfsizlik
-
-Bot tokenini kodga yoki Git tarixiga yozmang. Token chat, skrinshot yoki boshqa ochiq
-joyga yuborilgan bo'lsa, BotFather'da `/revoke` qilib yangisini oling. `.env.example`
-ichidagi qiymat faqat namuna.
+WebApp oddiy foydalanuvchiga faqat profil va so'rovlar tarixini ko'rsatadi. Admin
+ID `ADMIN_IDS` ichida bo'lsa, admin panel ham chiqadi.
 
 ## Docker bilan ishga tushirish
-
-Docker varianti `ffmpeg`ni o'zi o'rnatadi:
 
 ```bash
 cd /home/inomjon/media_downloader_bot
 cp .env.example .env
-```
-
-`.env` ichiga yangi `BOT_TOKEN`, o'z Telegram ID'ingizni `ADMIN_IDS` sifatida va
-kerakli narxlarni kiriting. Keyin:
-
-```bash
 docker compose up -d --build
 docker compose logs -f bot
 ```
@@ -264,32 +86,15 @@ cp .env.example .env
 .venv/bin/python -m app.main
 ```
 
-## Telegram post havolalari
+## Muhim xavfsizlik
 
-Foydalanuvchi botga Telegram media faylini yuborsa yoki forward qilsa, qo'shimcha
-sozlama kerak emas. `https://t.me/channel/123` ko'rinishidagi post havolasini yuklash
-uchun:
-
-1. `https://my.telegram.org` orqali `api_id` va `api_hash` oling.
-2. `.env` ichida `TELEGRAM_API_ID` va `TELEGRAM_API_HASH`ni kiriting.
-3. Private kanal uchun botni kanalga qo'shing.
-
-Public bo'lmagan, o'chirilgan yoki botga ko'rinmaydigan postlar yuklanmaydi.
-
-## YouTube va Instagram cheklovlari
-
-Platforma login/cookies talab qilsa, Netscape formatidagi cookies faylini serverga
-joylab, `YTDLP_COOKIES_FILE` bilan yo'lini ko'rsating. Cookies va `.env` Gitga
-qo'shilmaydi.
-
-Faqat o'zingizga tegishli yoki yuklashga ruxsatingiz bor materiallardan foydalaning.
-Platforma qoidalari va mualliflik huquqiga rioya qilish bot egasi va foydalanuvchi
-zimmasida.
+Bot tokenini kodga yoki Git tarixiga yozmang. Token chat, skrinshot yoki boshqa
+ochiq joyga yuborilgan bo'lsa, BotFather'da `/revoke` qilib yangisini oling.
 
 ## Test
 
 ```bash
 .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/pytest
 .venv/bin/ruff check .
+.venv/bin/pytest
 ```

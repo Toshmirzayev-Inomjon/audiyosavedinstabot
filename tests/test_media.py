@@ -14,7 +14,7 @@ class RecordingMediaService(MediaService):
 
 
 @pytest.mark.asyncio
-async def test_video_note_rectangle_uses_center_crop(tmp_path: Path) -> None:
+async def test_video_note_rectangle_has_no_visual_effects(tmp_path: Path) -> None:
     service = RecordingMediaService()
 
     await service.to_rectangle(
@@ -24,6 +24,10 @@ async def test_video_note_rectangle_uses_center_crop(tmp_path: Path) -> None:
     )
 
     command = service.commands[0]
-    filter_graph = command[command.index("-filter_complex") + 1]
-    assert "crop=min(iw\\,ih):min(iw\\,ih),crop=iw*0.82:ih*0.82" in filter_graph
-
+    video_filter = command[command.index("-vf") + 1]
+    assert video_filter == (
+        "scale=720:720:force_original_aspect_ratio=decrease,setsar=1"
+    )
+    assert "-filter_complex" not in command
+    assert "boxblur" not in " ".join(command)
+    assert "overlay" not in " ".join(command)

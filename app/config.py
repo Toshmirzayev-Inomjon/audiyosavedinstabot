@@ -56,39 +56,18 @@ def _parse_admins(raw: str) -> frozenset[int]:
         raise ValueError("ADMIN_IDS vergul bilan ajratilgan Telegram IDlar bo'lishi kerak") from exc
 
 
-def _parse_star_packages(raw: str) -> tuple[tuple[int, int], ...]:
-    packages: list[tuple[int, int]] = []
-    for item in raw.split(","):
-        item = item.strip()
-        if not item:
-            continue
-        try:
-            stars, credits = (int(value.strip()) for value in item.split(":", maxsplit=1))
-        except (ValueError, TypeError) as exc:
-            raise ValueError("STAR_PACKAGES formati: yulduz:balans,yulduz:balans") from exc
-        if stars <= 0 or credits <= 0:
-            raise ValueError("STAR_PACKAGES qiymatlari musbat bo'lishi kerak")
-        packages.append((stars, credits))
-    return tuple(packages)
-
-
 @dataclass(frozen=True, slots=True)
 class Settings:
     bot_token: str
     admin_ids: frozenset[int]
     database_path: Path
     temp_dir: Path
-    circle_price: int
-    initial_balance: int
     max_download_mb: int
     max_duration_minutes: int
     cookies_file: Path | None
     telegram_api_id: int | None
     telegram_api_hash: str | None
     telegram_session_path: Path
-    star_packages: tuple[tuple[int, int], ...]
-    custom_star_min: int
-    star_credit_rate: int
     bot_api_base: str | None
     bot_api_local: bool
     webapp_public_url: str | None
@@ -98,26 +77,7 @@ class Settings:
     database_url: str | None = None
     telegram_upload_mb: int = 49
     queue_concurrency: int = 2
-    daily_free_limit: int = 3
-    premium_stars: int = 100
-    referral_reward: int = 5_000
-    referral_new_user_reward: int = 2_000
     public_file_ttl_seconds: int = 3_600
-    tariff_standard_price: int = 25_000
-    tariff_premium_price: int = 50_000
-    tariff_standard_stars: int = 25
-    tariff_premium_stars: int = 50
-    tariff_standard_daily_limit: int = 15
-    tariff_period_days: int = 30
-    ai_provider: str = "local"
-    openai_api_key: str | None = None
-    openai_model: str = "gpt-5.5"
-    openai_image_model: str = "gpt-image-1.5"
-    gemini_api_key: str | None = None
-    gemini_model: str = "gemini-flash-latest"
-    gemini_image_model: str = "gemini-2.5-flash-image"
-    standard_ai_daily_limit: int = 20
-    premium_ai_daily_limit: int = 100
 
     @property
     def max_download_bytes(self) -> int:
@@ -156,8 +116,6 @@ class Settings:
                 os.getenv("DATABASE_PATH", root / "data" / "bot.sqlite3")
             ).resolve(),
             temp_dir=Path(os.getenv("TEMP_DIR", root / "tmp")).resolve(),
-            circle_price=_as_int("CIRCLE_PRICE", 5000),
-            initial_balance=_as_int("INITIAL_BALANCE", 0),
             max_download_mb=_as_int("MAX_DOWNLOAD_MB", 500),
             max_duration_minutes=_as_int("MAX_DURATION_MINUTES", 660),
             cookies_file=Path(cookies_raw).resolve() if cookies_raw else None,
@@ -166,15 +124,6 @@ class Settings:
             telegram_session_path=Path(
                 os.getenv("TELEGRAM_SESSION_PATH", root / "data" / "telegram_bot")
             ).resolve(),
-            star_packages=_parse_star_packages(
-                os.getenv(
-                    "STAR_PACKAGES",
-                    "5:5000,10:10000,15:15000,25:25000,"
-                    "50:55000,100:120000,250:325000,500:700000,1000:1500000",
-                )
-            ),
-            custom_star_min=_as_int("CUSTOM_STAR_MIN", 5),
-            star_credit_rate=_as_int("STAR_CREDIT_RATE", 1000),
             bot_api_base=os.getenv("BOT_API_BASE", "").strip().rstrip("/") or None,
             bot_api_local=_as_bool("BOT_API_LOCAL"),
             webapp_public_url=_webapp_public_url(),
@@ -184,76 +133,20 @@ class Settings:
             database_url=os.getenv("DATABASE_URL", "").strip() or None,
             telegram_upload_mb=_as_int("TELEGRAM_UPLOAD_MB", 49),
             queue_concurrency=_as_int("QUEUE_CONCURRENCY", 2),
-            daily_free_limit=_as_int("DAILY_FREE_LIMIT", 3),
-            premium_stars=_as_int("PREMIUM_STARS", 100),
-            referral_reward=_as_int("REFERRAL_REWARD", 5_000),
-            referral_new_user_reward=_as_int("REFERRAL_NEW_USER_REWARD", 2_000),
             public_file_ttl_seconds=_as_int("PUBLIC_FILE_TTL_SECONDS", 3_600),
-            tariff_standard_price=_as_int("TARIFF_STANDARD_PRICE", 25_000),
-            tariff_premium_price=_as_int("TARIFF_PREMIUM_PRICE", 50_000),
-            tariff_standard_stars=_as_int("TARIFF_STANDARD_STARS", 25),
-            tariff_premium_stars=_as_int("TARIFF_PREMIUM_STARS", 50),
-            tariff_standard_daily_limit=_as_int(
-                "TARIFF_STANDARD_DAILY_LIMIT",
-                15,
-            ),
-            tariff_period_days=_as_int("TARIFF_PERIOD_DAYS", 30),
-            ai_provider=os.getenv("AI_PROVIDER", "local").strip().lower(),
-            openai_api_key=os.getenv("OPENAI_API_KEY", "").strip() or None,
-            openai_model=os.getenv("OPENAI_MODEL", "gpt-5.5").strip(),
-            openai_image_model=os.getenv(
-                "OPENAI_IMAGE_MODEL",
-                "gpt-image-1.5",
-            ).strip(),
-            gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip() or None,
-            gemini_model=os.getenv("GEMINI_MODEL", "gemini-flash-latest").strip(),
-            gemini_image_model=os.getenv(
-                "GEMINI_IMAGE_MODEL",
-                "gemini-2.5-flash-image",
-            ).strip(),
-            standard_ai_daily_limit=_as_int("STANDARD_AI_DAILY_LIMIT", 20),
-            premium_ai_daily_limit=_as_int("PREMIUM_AI_DAILY_LIMIT", 100),
         )
-        if settings.circle_price < 0 or settings.initial_balance < 0:
-            raise ValueError("Balans va narx manfiy bo'lishi mumkin emas")
         if settings.max_download_mb <= 0 or settings.max_duration_minutes <= 0:
             raise ValueError("Media limitlari musbat bo'lishi kerak")
-        if settings.custom_star_min <= 0 or settings.star_credit_rate <= 0:
-            raise ValueError("Stars sozlamalari musbat bo'lishi kerak")
         if settings.webapp_port <= 0 or settings.phone_code_ttl_seconds <= 0:
             raise ValueError("WebApp sozlamalari musbat bo'lishi kerak")
         if (
             settings.telegram_upload_mb <= 0
             or settings.queue_concurrency <= 0
-            or settings.daily_free_limit <= 0
-            or settings.premium_stars <= 0
             or settings.public_file_ttl_seconds <= 0
-            or settings.tariff_standard_price <= 0
-            or settings.tariff_premium_price <= 0
-            or settings.tariff_standard_stars <= 0
-            or settings.tariff_premium_stars <= 0
-            or settings.tariff_standard_daily_limit <= 0
-            or settings.tariff_period_days <= 0
         ):
-            raise ValueError("Limit va Premium sozlamalari musbat bo'lishi kerak")
+            raise ValueError("Limit sozlamalari musbat bo'lishi kerak")
         if settings.bot_api_local and not settings.bot_api_base:
             raise ValueError("BOT_API_LOCAL=true bo'lsa BOT_API_BASE berilishi kerak")
-        if settings.ai_provider not in {"auto", "openai", "gemini", "local"}:
-            raise ValueError(
-                "AI_PROVIDER auto, openai, gemini yoki local bo'lishi kerak"
-            )
-        if (
-            not settings.openai_model
-            or not settings.openai_image_model
-            or not settings.gemini_model
-            or not settings.gemini_image_model
-        ):
-            raise ValueError("AI model nomlari bo'sh bo'lishi mumkin emas")
-        if (
-            settings.standard_ai_daily_limit <= 0
-            or settings.premium_ai_daily_limit <= 0
-        ):
-            raise ValueError("AI kunlik limitlari musbat bo'lishi kerak")
         return settings
 
     def prepare_directories(self) -> None:

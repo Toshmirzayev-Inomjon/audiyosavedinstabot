@@ -14,7 +14,6 @@ from app.config import Settings
 from app.database import Database
 from app.handlers import Services, build_router
 from app.jobs import JobManager
-from app.services.ai import AIService
 from app.services.downloader import DownloadService
 from app.services.media import MediaService
 from app.services.telegram_downloader import TelegramDownloadService
@@ -27,19 +26,18 @@ async def configure_bot_profile(bot: Bot, webapp_public_url: str | None) -> None
         [
             BotCommand(command="start", description="Botni ochish va xizmatlarni ko'rish"),
             BotCommand(command="help", description="Botdan foydalanish bo'yicha yordam"),
-            BotCommand(command="tarif", description="Tarifni ko'rish yoki almashtirish"),
-            BotCommand(command="balance", description="Balans va oxirgi amallar"),
-            BotCommand(command="buy", description="Telegram Stars orqali hisob to'ldirish"),
+            BotCommand(command="history", description="Yuklash tarixini ko'rish"),
+            BotCommand(command="ai", description="AI qo'shiq obunasi haqida"),
             BotCommand(command="cancel", description="Joriy amalni bekor qilish"),
         ]
     )
     await bot.set_my_short_description(
-        "100 ta media, AI, ta'lim, biznes va kundalik xizmatlar Mini App'i."
+        "Link orqali video/MP3 yuklaydi va qo'shiq nomi bo'yicha musiqa topadi."
     )
     await bot.set_my_description(
-        "Media yuklash, AI, hujjatlar, ta'lim, ob-havo, biznes va boshqa "
-        "kategoriyalardagi xizmatlar. Open tugmasi orqali Mini App'ni oching. "
-        "Ishlash uchun /start ni bosing va tarif tanlang."
+        "Video va MP3 yuklash, qo'shiq nomi yoki ijrochi bo'yicha musiqa qidirish, "
+        "aylana video tayyorlash va uni oddiy videoga o'tkazish. Open tugmasi "
+        "orqali profil va so'rovlaringizni ko'ring."
     )
     if webapp_public_url:
         await bot.set_chat_menu_button(
@@ -77,10 +75,7 @@ async def run() -> None:
     settings = Settings.load()
     settings.prepare_directories()
 
-    database = Database(
-        settings.database_url or settings.database_path,
-        settings.initial_balance,
-    )
+    database = Database(settings.database_url or settings.database_path)
     await database.initialize()
 
     telegram = TelegramDownloadService(
@@ -101,15 +96,6 @@ async def run() -> None:
         media=MediaService(),
         telegram=telegram,
         jobs=JobManager(settings.queue_concurrency),
-        ai=AIService(
-            provider=settings.ai_provider,
-            openai_api_key=settings.openai_api_key,
-            openai_model=settings.openai_model,
-            openai_image_model=settings.openai_image_model,
-            gemini_api_key=settings.gemini_api_key,
-            gemini_model=settings.gemini_model,
-            gemini_image_model=settings.gemini_image_model,
-        ),
     )
 
     session = None

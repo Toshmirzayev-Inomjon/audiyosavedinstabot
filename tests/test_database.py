@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 
 import pytest
@@ -6,329 +7,132 @@ from app.database import Database
 
 
 @pytest.mark.asyncio
-async def test_balance_and_profile_survive_reinitialize(tmp_path: Path) -> None:
+async def test_profile_survives_reinitialize(tmp_path: Path) -> None:
     path = tmp_path / "persistent.sqlite3"
-    database = Database(path, initial_balance=1_000)
+    database = Database(path)
     await database.initialize()
     await database.ensure_user(10, "user", "Test User")
-    await database.add_balance(10, 2_000, "credit")
     await database.upsert_profile(
         10,
         first_name="Test",
         last_name="User",
         phone="+998901234567",
+        avatar_data="data:image/png;base64,abc",
     )
+    await database.set_profile_password_hash(10, "hashed-password")
 
-    reopened = Database(path, initial_balance=9_999)
+    reopened = Database(path)
     await reopened.initialize()
     await reopened.ensure_user(10, "updated", "Updated Name")
 
-    assert await reopened.get_balance(10) == 3_000
     profile = await reopened.get_profile(10)
     assert profile is not None
     assert profile.first_name == "Test"
     assert profile.last_name == "User"
     assert profile.phone == "+998901234567"
+    assert profile.avatar_data == "data:image/png;base64,abc"
+    assert profile.password_set is True
 
 
 @pytest.mark.asyncio
-async def test_balance_charge_refund_and_idempotent_credit(tmp_path: Path) -> None:
-    database = Database(tmp_path / "test.sqlite3", initial_balance=1_000)
+async def test_phone_verification_code(tmp_path: Path) -> None:
+    database = Database(tmp_path / "phone.sqlite3")
     await database.initialize()
     await database.ensure_user(10, "user", "Test User")
-
-    assert await database.get_balance(10) == 1_000
-
-    result = await database.charge(10, 400, "circle")
-    assert result.success is True
-    assert result.balance == 600
-
-    insufficient = await database.charge(10, 700, "circle")
-    assert insufficient.success is False
-    assert insufficient.balance == 600
-
-    added, balance = await database.add_balance(
+    await database.store_phone_code(
         10,
-        400,
-        "refund",
-        kind="refund",
-        external_id="payment-1",
+        phone="+998901234567",
+        code_hash="correct",
+        expires_at=int(time.time()) + 60,
     )
-    assert added is True
-    assert balance == 1_000
 
-    added_again, balance_again = await database.add_balance(
-        10,
-        400,
-        "duplicate",
-        external_id="payment-1",
-    )
-    assert added_again is False
-    assert balance_again == 1_000
+    ok, message = await database.verify_phone_code(10, "wrong")
+    assert ok is False
+    assert message == "Kod noto'g'ri"
+
+    ok, message = await database.verify_phone_code(10, "correct")
+    assert ok is True
+    assert message == "Telefon tasdiqlandi"
+    profile = await database.get_profile(10)
+    assert profile is not None
+    assert profile.phone_verified is True
 
 
 @pytest.mark.asyncio
-async def test_admin_credit_creates_missing_user(tmp_path: Path) -> None:
-    database = Database(tmp_path / "test.sqlite3")
+async def test_ai_subscription_and_admin_search(tmp_path: Path) -> None:
+    path = tmp_path / "subscriptions.sqlite3"
+    database = Database(path)
     await database.initialize()
+    await database.ensure_user(10, "musicfan", "Music Fan")
+    await database.upsert_profile(
+        10,
+        first_name="Music",
+        last_name="Fan",
+        phone="+998901112233",
+    )
+    expires_at = await database.activate_ai_subscription(
+        10,
+        days=30,
+        admin_id=1,
+        note="manual activation",
+    )
 
-    added, balance = await database.add_balance(99, 5_000, "admin")
-
-    assert added is True
-    assert balance == 5_000
-    assert await database.get_balance(99) == 5_000
+    assert await database.ai_subscription_until(10) == expires_at
+    users = await database.admin_search_users("musicfan")
+    assert users[0]["user_id"] == 10
+    assert users[0]["ai_subscription_until"] == expires_at
+    users_by_phone = await database.admin_search_users("998901112233")
+    assert users_by_phone[0]["user_id"] == 10
 
 
 @pytest.mark.asyncio
-async def test_pending_star_payment_confirm_adds_balance_once(tmp_path: Path) -> None:
-    database = Database(tmp_path / "test.sqlite3")
+async def test_download_history_and_public_file(tmp_path: Path) -> None:
+    database = Database(tmp_path / "downloads.sqlite3")
     await database.initialize()
-    await database.ensure_user(10, "user", "Test User")
-
-    created = await database.create_pending_star_payment(
-        10,
-        stars=5,
-        credits=5_000,
-        external_id="stars-payment-1",
-    )
-    assert created is True
-    duplicate = await database.create_pending_star_payment(
-        10,
-        stars=5,
-        credits=5_000,
-        external_id="stars-payment-1",
-    )
-    assert duplicate is False
-
-    confirmed, balance = await database.confirm_star_payment(
-        "stars-payment-1",
-        "Stars payment",
-    )
-    assert confirmed is True
-    assert balance == 5_000
-
-    confirmed_again, balance_again = await database.confirm_star_payment(
-        "stars-payment-1",
-        "Stars payment",
-    )
-    assert confirmed_again is False
-    assert balance_again == 5_000
-
-
-@pytest.mark.asyncio
-async def test_free_and_paid_tariffs_are_persistent_and_idempotent(
-    tmp_path: Path,
-) -> None:
-    database = Database(tmp_path / "test.sqlite3", initial_balance=75_000)
-    await database.initialize()
-    await database.ensure_user(10, "user", "Test User")
-
-    free = await database.activate_free_tariff(10, period_seconds=2_592_000)
-    assert free.success is True
-    assert free.expires_at is not None
-    active = await database.get_active_tariff(10)
-    assert active is not None
-    assert active.plan_code == "free"
-    assert await database.tariff_daily_limit(
-        10,
-        free_limit=3,
-        standard_limit=15,
-    ) == 3
-
-    second_free = await database.activate_free_tariff(10, period_seconds=2_592_000)
-    assert second_free.success is False
-    assert second_free.reason == "active"
-
-    standard = await database.purchase_tariff(
-        10,
-        plan_code="standard",
-        price=25_000,
-        period_seconds=2_592_000,
-    )
-    assert standard.success is True
-    assert standard.balance == 50_000
-    assert await database.tariff_daily_limit(
-        10,
-        free_limit=3,
-        standard_limit=15,
-    ) == 15
-
-    duplicate = await database.purchase_tariff(
-        10,
-        plan_code="standard",
-        price=25_000,
-        period_seconds=2_592_000,
-    )
-    assert duplicate.success is False
-    assert duplicate.reason == "already_active"
-    assert duplicate.balance == 50_000
-
-    premium = await database.purchase_tariff(
-        10,
-        plan_code="premium",
-        price=50_000,
-        period_seconds=2_592_000,
-    )
-    assert premium.success is True
-    assert premium.balance == 0
-    assert await database.is_premium(10)
-    assert await database.tariff_daily_limit(
-        10,
-        free_limit=3,
-        standard_limit=15,
-    ) == -1
-    downgrade = await database.purchase_tariff(
-        10,
-        plan_code="standard",
-        price=25_000,
-        period_seconds=2_592_000,
-    )
-    assert downgrade.success is False
-    assert downgrade.reason == "higher_active"
-    assert downgrade.balance == 0
-
-    reopened = Database(tmp_path / "test.sqlite3")
-    await reopened.initialize()
-    persisted = await reopened.get_active_tariff(10)
-    assert persisted is not None
-    assert persisted.plan_code == "premium"
-    assert await reopened.get_balance(10) == 0
-
-
-@pytest.mark.asyncio
-async def test_tariff_stars_payment_is_idempotent(tmp_path: Path) -> None:
-    database = Database(tmp_path / "test.sqlite3")
-    await database.initialize()
-    await database.ensure_user(10, "user", "Test User")
-
-    first = await database.activate_tariff_with_stars(
-        10,
-        plan_code="standard",
-        stars=25,
-        charge_id="tariff-stars-1",
-        period_seconds=2_592_000,
-    )
-    assert first.success is True
-    assert first.expires_at is not None
-    active = await database.get_active_tariff(10)
-    assert active is not None
-    assert active.plan_code == "standard"
-
-    duplicate = await database.activate_tariff_with_stars(
-        10,
-        plan_code="standard",
-        stars=25,
-        charge_id="tariff-stars-1",
-        period_seconds=2_592_000,
-    )
-    assert duplicate.success is False
-    assert duplicate.reason == "duplicate"
-    assert duplicate.expires_at == first.expires_at
-
-    premium = await database.activate_tariff_with_stars(
-        10,
-        plan_code="premium",
-        stars=50,
-        charge_id="tariff-stars-2",
-        period_seconds=2_592_000,
-    )
-    assert premium.success is True
-    upgraded = await database.get_active_tariff(10)
-    assert upgraded is not None
-    assert upgraded.plan_code == "premium"
-    assert await database.get_balance(10) == 0
-    payments = await database.admin_payments()
-    assert any(
-        payment["stars"] == 50 and payment["status"] == "tariff:premium"
-        for payment in payments
-    )
-
-
-@pytest.mark.asyncio
-async def test_service_daily_limit_can_be_released(tmp_path: Path) -> None:
-    database = Database(tmp_path / "test.sqlite3")
-    await database.initialize()
-    await database.ensure_user(10, "user", "Test User")
-
-    allowed, remaining = await database.reserve_service_use(10, 1)
-    assert allowed is True
-    assert remaining == 0
-    blocked, _ = await database.reserve_service_use(10, 1)
-    assert blocked is False
-
-    await database.release_service_use(10)
-    allowed_again, remaining_again = await database.reserve_service_use(10, 1)
-    assert allowed_again is True
-    assert remaining_again == 0
-
-
-@pytest.mark.asyncio
-async def test_referral_promo_premium_limit_and_history(tmp_path: Path) -> None:
-    database = Database(tmp_path / "test.sqlite3")
-    await database.initialize()
-    await database.ensure_user(10, "inviter", "Inviter")
-    await database.ensure_user(20, "invitee", "Invitee")
-
-    assert await database.apply_referral(
-        20,
-        10,
-        inviter_reward=5_000,
-        invitee_reward=2_000,
-    )
-    assert not await database.apply_referral(
-        20,
-        10,
-        inviter_reward=5_000,
-        invitee_reward=2_000,
-    )
-    assert await database.get_balance(10) == 5_000
-    assert await database.get_balance(20) == 2_000
-
-    await database.create_promo("HELLO", 3_000, 1)
-    redeemed, _message, balance = await database.redeem_promo(20, "hello")
-    assert redeemed is True
-    assert balance == 5_000
-    duplicate, _message, _balance = await database.redeem_promo(20, "HELLO")
-    assert duplicate is False
-
-    allowed, remaining = await database.reserve_daily_use(20, 1)
-    assert allowed is True
-    assert remaining == 0
-    allowed_again, _ = await database.reserve_daily_use(20, 1)
-    assert allowed_again is False
-    await database.release_daily_use(20)
-
-    expires_at = await database.activate_premium(
-        20,
-        stars=100,
-        charge_id="premium-1",
-        period_seconds=60,
-    )
-    assert expires_at > 0
-    assert await database.is_premium(20)
-    duplicate_expiry = await database.activate_premium(
-        20,
-        stars=100,
-        charge_id="premium-1",
-        period_seconds=60,
-    )
-    assert duplicate_expiry == expires_at
-    premium_allowed, premium_remaining = await database.reserve_daily_use(20, 1)
-    assert premium_allowed is True
-    assert premium_remaining == -1
-
+    await database.ensure_user(20, "listener", "Listener")
     download_id = await database.create_download(
         20,
-        source_url="https://youtu.be/test",
-        media_type="video",
-        quality="720",
+        source_url="artist song",
+        media_type="audio",
+        quality="mp3",
     )
     await database.finish_download(
         download_id,
         status="completed",
         telegram_file_id="file-id",
-        title="Test video",
+        title="Test song",
     )
+
     history = await database.recent_downloads(20)
     assert history[0].telegram_file_id == "file-id"
-    assert history[0].title == "Test video"
+    assert history[0].title == "Test song"
+    assert (await database.get_download(20, download_id)).id == download_id
+
+    token = await database.create_public_file(
+        20,
+        path="/tmp/test.mp3",
+        filename="test.mp3",
+        mime_type="audio/mpeg",
+        ttl_seconds=60,
+    )
+    assert await database.get_public_file(token) == (
+        "/tmp/test.mp3",
+        "test.mp3",
+        "audio/mpeg",
+    )
+
+
+@pytest.mark.asyncio
+async def test_language_and_admin_stats(tmp_path: Path) -> None:
+    database = Database(tmp_path / "stats.sqlite3")
+    await database.initialize()
+    await database.ensure_user(10, "user", "User")
+    await database.set_language(10, "ru")
+    await database.log_error("download", "failed", 10)
+
+    assert await database.get_language(10) == "ru"
+    stats = await database.admin_stats()
+    assert stats["users"] == 1
+    assert stats["errors"] == 1
+    assert (await database.admin_users())[0]["user_id"] == 10
+    assert (await database.admin_errors())[0]["context"] == "download"

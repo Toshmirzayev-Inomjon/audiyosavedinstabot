@@ -121,35 +121,14 @@ class MediaService:
         *,
         from_video_note: bool = False,
     ) -> Path:
-        if from_video_note:
-            # Video notes are square/circular in Telegram. Cropping the center avoids
-            # black preview corners and Telegram UI-like marks in the rectangular output.
-            filter_graph = (
-                "[0:v]crop=min(iw\\,ih):min(iw\\,ih),crop=iw*0.82:ih*0.82,"
-                "scale=1280:720:force_original_aspect_ratio=increase,"
-                "crop=1280:720,boxblur=24:12[bg];"
-                "[0:v]crop=min(iw\\,ih):min(iw\\,ih),crop=iw*0.82:ih*0.82,"
-                "scale=720:720:force_original_aspect_ratio=decrease[fg];"
-                "[bg][fg]overlay=(W-w)/2:(H-h)/2,format=yuv420p[v]"
-            )
-        else:
-            filter_graph = (
-                "[0:v]scale=1280:720:force_original_aspect_ratio=increase,"
-                "crop=1280:720,boxblur=20:10[bg];"
-                "[0:v]scale=720:720:force_original_aspect_ratio=decrease[fg];"
-                "[bg][fg]overlay=(W-w)/2:(H-h)/2,format=yuv420p[v]"
-            )
+        del from_video_note
         await self._run(
             "ffmpeg",
             "-y",
             "-i",
             str(source),
-            "-filter_complex",
-            filter_graph,
-            "-map",
-            "[v]",
-            "-map",
-            "0:a?",
+            "-vf",
+            "scale=720:720:force_original_aspect_ratio=decrease,setsar=1",
             "-c:v",
             "libx264",
             "-preset",
@@ -160,7 +139,8 @@ class MediaService:
             "aac",
             "-b:a",
             "128k",
-            "-shortest",
+            "-pix_fmt",
+            "yuv420p",
             "-movflags",
             "+faststart",
             str(destination),

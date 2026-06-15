@@ -19,7 +19,14 @@ class DownloadCancelled(MediaDownloadError):
 
 
 SUPPORTED_HOSTS = {
+    "facebook.com": "Facebook",
+    "fb.watch": "Facebook",
     "instagram.com": "Instagram",
+    "music.youtube.com": "YouTube Music",
+    "soundcloud.com": "SoundCloud",
+    "tiktok.com": "TikTok",
+    "twitter.com": "X",
+    "x.com": "X",
     "youtube.com": "YouTube",
     "youtu.be": "YouTube",
 }
@@ -51,7 +58,14 @@ def platform_for_url(url: str) -> str:
     for allowed_host, platform in SUPPORTED_HOSTS.items():
         if hostname == allowed_host or hostname.endswith(f".{allowed_host}"):
             return platform
-    raise MediaDownloadError("Faqat YouTube yoki Instagram havolasi qo'llanadi")
+    raise MediaDownloadError("Bu platforma hozir qo'llab-quvvatlanmaydi")
+
+
+def search_query(text: str) -> str:
+    query = " ".join(text.strip().split())
+    if len(query) < 2:
+        raise MediaDownloadError("Qo'shiq nomi yoki ijrochi nomini yozing")
+    return f"ytsearch1:{query}"
 
 
 class DownloadService:
@@ -76,7 +90,8 @@ class DownloadService:
         progress: Callable[[float, str], None] | None = None,
         cancel_event: Event | asyncio.Event | None = None,
     ) -> Path:
-        platform_for_url(url)
+        if not url.startswith("ytsearch"):
+            platform_for_url(url)
         return await asyncio.to_thread(
             self._download_sync,
             url,
