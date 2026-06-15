@@ -22,8 +22,9 @@ Bot ichidagi Stars, balans, avtomatik tarif va promo kod oqimlari olib tashlanga
 Media yuklash va video note funksiyalari bepul ishlaydi.
 
 AI qo'shiq yaratish alohida pullik obuna bo'ladi, lekin hozir avtomatik to'lov
-yo'q. Foydalanuvchi adminga murojaat qiladi, admin karta orqali to'lovni
-tekshiradi va WebApp admin panelidan AI obunani qo'lda ochadi.
+yo'q. Foydalanuvchi botdagi `/tarif` orqali 30, 90 yoki 365 kunni tanlaydi va
+adminga murojaat qiladi. Admin karta orqali to'lovni tekshiradi va botdagi
+`/aiactivate USER_ID DAYS` komandasi bilan obunani ochadi.
 
 Hugging Face ulanishi serverning maxfiy Variables qismida saqlanadi:
 
@@ -71,7 +72,13 @@ Telegram ichidagi `Open` tugmasi `WEBAPP_PUBLIC_URL` orqali ishlaydi. Railway'da
 public domain bo'lsa bot `RAILWAY_PUBLIC_DOMAIN`dan avtomatik foydalanadi.
 
 WebApp oddiy foydalanuvchiga faqat profil va so'rovlar tarixini ko'rsatadi. Admin
-ID `ADMIN_IDS` ichida bo'lsa, admin panel ham chiqadi.
+WebApp barcha foydalanuvchilar uchun faqat profil, tarix va AI obuna holatini
+ko'rsatadi. Admin boshqaruvi WebApp'da emas, Telegram bot komandalarida ishlaydi:
+
+```text
+/admin USER
+/aiactivate USER_ID DAYS
+```
 
 ## Docker bilan ishga tushirish
 

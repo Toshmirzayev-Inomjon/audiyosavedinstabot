@@ -8,7 +8,13 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.enums import ParseMode
-from aiogram.types import BotCommand, MenuButtonCommands, MenuButtonWebApp, WebAppInfo
+from aiogram.types import (
+    BotCommand,
+    BotCommandScopeChat,
+    MenuButtonCommands,
+    MenuButtonWebApp,
+    WebAppInfo,
+)
 
 from app.config import Settings
 from app.database import Database
@@ -21,7 +27,11 @@ from app.tunnel import QuickTunnel, start_quick_tunnel
 from app.webapp import start_web_app
 
 
-async def configure_bot_profile(bot: Bot, webapp_public_url: str | None) -> None:
+async def configure_bot_profile(
+    bot: Bot,
+    webapp_public_url: str | None,
+    admin_ids: frozenset[int] = frozenset(),
+) -> None:
     await bot.set_my_commands(
         [
             BotCommand(command="start", description="Botni ochish va xizmatlarni ko'rish"),
@@ -40,6 +50,21 @@ async def configure_bot_profile(bot: Bot, webapp_public_url: str | None) -> None
         "aylana video tayyorlash va uni oddiy videoga o'tkazish. Open tugmasi "
         "orqali profil va so'rovlaringizni ko'ring."
     )
+    for admin_id in admin_ids:
+        try:
+            await bot.set_my_commands(
+                [
+                    BotCommand(command="admin", description="Userlarni qidirish"),
+                    BotCommand(
+                        command="aiactivate",
+                        description="AI obunani faollashtirish",
+                    ),
+                    BotCommand(command="start", description="Asosiy menyu"),
+                ],
+                scope=BotCommandScopeChat(chat_id=admin_id),
+            )
+        except Exception:
+            logging.exception("Admin komandalarini sozlashda xato: %s", admin_id)
     if webapp_public_url:
         await bot.set_chat_menu_button(
             menu_button=MenuButtonWebApp(
@@ -56,11 +81,12 @@ async def run_polling_forever(
     bot: Bot,
     dispatcher: Dispatcher,
     webapp_public_url: str | None,
+    admin_ids: frozenset[int] = frozenset(),
 ) -> None:
     while True:
         try:
             try:
-                await configure_bot_profile(bot, webapp_public_url)
+                await configure_bot_profile(bot, webapp_public_url, admin_ids)
             except Exception:
                 logging.exception("Bot profilini sozlashda xato")
             await bot.delete_webhook(drop_pending_updates=False)
@@ -151,6 +177,7 @@ async def run() -> None:
             bot=bot,
             dispatcher=dispatcher,
             webapp_public_url=webapp_public_url,
+            admin_ids=settings.admin_ids,
         )
     finally:
         if tunnel is not None:

@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS ai_subscriptions (
 POSTGRES_SCHEMA = (
     SCHEMA.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY")
     .replace("user_id INTEGER", "user_id BIGINT")
+    .replace("created_by INTEGER", "created_by BIGINT")
 )
 
 
@@ -181,6 +182,11 @@ class Database:
             if not self.postgres:
                 db.execute("PRAGMA journal_mode=WAL")
             db.executescript(POSTGRES_SCHEMA if self.postgres else SCHEMA)
+            if self.postgres:
+                db.execute(
+                    "ALTER TABLE ai_subscriptions "
+                    "ALTER COLUMN created_by TYPE BIGINT"
+                )
             migrations = (
                 (
                     "users",

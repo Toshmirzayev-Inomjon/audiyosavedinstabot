@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 from threading import Event
@@ -8,6 +10,8 @@ from urllib.parse import urlparse
 
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError
+
+logger = logging.getLogger(__name__)
 
 
 class MediaDownloadError(RuntimeError):
@@ -68,6 +72,12 @@ def search_query(text: str) -> str:
     return f"ytsearch1:{query}"
 
 
+def search_queries(text: str) -> tuple[str, str]:
+    youtube_query = search_query(text)
+    normalized = youtube_query.split(":", maxsplit=1)[1]
+    return youtube_query, f"scsearch1:{normalized}"
+
+
 class DownloadService:
     def __init__(
         self,
@@ -90,7 +100,7 @@ class DownloadService:
         progress: Callable[[float, str], None] | None = None,
         cancel_event: Event | asyncio.Event | None = None,
     ) -> Path:
-        if not url.startswith("ytsearch"):
+        if not url.startswith(("ytsearch", "scsearch")):
             platform_for_url(url)
         return await asyncio.to_thread(
             self._download_sync,
@@ -101,6 +111,40 @@ class DownloadService:
             progress,
             cancel_event,
         )
+
+    async def search(
+        self,
+        query: str,
+        directory: Path,
+        *,
+        progress: Callable[[float, str], None] | None = None,
+        cancel_event: Event | asyncio.Event | None = None,
+    ) -> Path:
+        last_error: MediaDownloadError | None = None
+        for candidate in search_queries(query):
+            try:
+                return await self.download(
+                    candidate,
+                    directory,
+                    audio=True,
+                    quality="audio",
+                    progress=progress,
+                    cancel_event=cancel_event,
+                )
+            except DownloadCancelled:
+                raise
+            except MediaDownloadError as exc:
+                last_error = exc
+                logger.warning("Music search failed for %s: %s", candidate, exc)
+                for path in directory.iterdir():
+                    if path.is_file():
+                        path.unlink(missing_ok=True)
+                    elif path.is_dir():
+                        shutil.rmtree(path, ignore_errors=True)
+        raise MediaDownloadError(
+            "Qo'shiq YouTube va SoundCloud orqali topilmadi yoki platformalar "
+            "server so'rovini vaqtincha chekladi."
+        ) from last_error
 
     def _download_sync(
         self,
@@ -145,7 +189,10 @@ class DownloadService:
             "merge_output_format": "mp4",
         }
         if self.cookies_file:
-            options["cookiefile"] = str(self.cookies_file)
+            if self.cookies_file.is_file():
+                options["cookiefile"] = str(self.cookies_file)
+            else:
+                logger.warning("yt-dlp cookies file not found: %s", self.cookies_file)
 
         try:
             with YoutubeDL(options) as ydl:
@@ -155,6 +202,7 @@ class DownloadService:
         except DownloadError as exc:
             if cancel_event and cancel_event.is_set():
                 raise DownloadCancelled("Yuklash bekor qilindi") from exc
+            logger.warning("yt-dlp download error for %s: %s", url, exc)
             raise MediaDownloadError(
                 "Media yuklanmadi. Havola yopiq, o'chirilgan yoki platforma cheklov qo'ygan."
             ) from exc

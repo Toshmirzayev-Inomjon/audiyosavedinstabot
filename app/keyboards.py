@@ -114,6 +114,43 @@ def history_keyboard(items: list[tuple[int, str]]) -> InlineKeyboardMarkup:
     )
 
 
+def ai_tariff_keyboard(admin_ids: frozenset[int]) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(text="30 kun", callback_data="ai_plan:30"),
+            InlineKeyboardButton(text="90 kun", callback_data="ai_plan:90"),
+            InlineKeyboardButton(text="365 kun", callback_data="ai_plan:365"),
+        ]
+    ]
+    if admin_ids:
+        admin_id = min(admin_ids)
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="👤 Admin bilan bog'lanish",
+                    url=f"tg://user?id={admin_id}",
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_contact_keyboard(admin_ids: frozenset[int]) -> InlineKeyboardMarkup | None:
+    if not admin_ids:
+        return None
+    admin_id = min(admin_ids)
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="👤 Adminga yozish",
+                    url=f"tg://user?id={admin_id}",
+                )
+            ]
+        ]
+    )
+
+
 def cancel_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text=CANCEL_BUTTON)]],

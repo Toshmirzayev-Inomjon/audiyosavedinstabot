@@ -81,14 +81,6 @@ def _auth_user(request: web.Request) -> dict:
         raise web.HTTPUnauthorized(text=str(exc)) from exc
 
 
-def _auth_admin(request: web.Request) -> dict:
-    user = _auth_user(request)
-    settings: Settings = request.app["settings"]
-    if int(user["id"]) not in settings.admin_ids:
-        raise web.HTTPForbidden(text="Bu bo'lim faqat adminlar uchun")
-    return user
-
-
 def _serialize_profile(profile) -> dict | None:
     if not profile:
         return None
@@ -113,6 +105,7 @@ async def health_handler(request: web.Request) -> web.Response:
             "ok": True,
             "ai_configured": bool(settings.huggingface_api_token),
             "ai_model": settings.huggingface_music_model,
+            "admin_configured": bool(settings.admin_ids),
         }
     )
 
@@ -183,7 +176,6 @@ async def me_handler(request: web.Request) -> web.Response:
             "ai_configured": bool(settings.huggingface_api_token),
             "ai_model": settings.huggingface_music_model,
             "language": language,
-            "is_admin": user_id in settings.admin_ids,
             "bot_username": request.app["bot_username"],
         }
     )
@@ -199,51 +191,6 @@ async def set_language_handler(request: web.Request) -> web.Response:
     except ValueError as exc:
         raise web.HTTPBadRequest(text=str(exc)) from exc
     return web.json_response({"ok": True, "language": language})
-
-
-async def admin_stats_handler(request: web.Request) -> web.Response:
-    _auth_admin(request)
-    database: Database = request.app["database"]
-    return web.json_response({"stats": await database.admin_stats()})
-
-
-async def admin_users_handler(request: web.Request) -> web.Response:
-    _auth_admin(request)
-    database: Database = request.app["database"]
-    return web.json_response({"users": await database.admin_users()})
-
-
-async def admin_errors_handler(request: web.Request) -> web.Response:
-    _auth_admin(request)
-    database: Database = request.app["database"]
-    return web.json_response({"errors": await database.admin_errors()})
-
-
-async def admin_search_handler(request: web.Request) -> web.Response:
-    _auth_admin(request)
-    database: Database = request.app["database"]
-    query = request.query.get("q", "")
-    return web.json_response({"users": await database.admin_search_users(query)})
-
-
-async def admin_subscription_handler(request: web.Request) -> web.Response:
-    admin = _auth_admin(request)
-    data = await _json_body(request)
-    try:
-        user_id = int(data.get("user_id"))
-        days = int(data.get("days", 30))
-    except (TypeError, ValueError) as exc:
-        raise web.HTTPBadRequest(text="USER_ID yoki kun noto'g'ri") from exc
-    if days <= 0:
-        raise web.HTTPBadRequest(text="Kun musbat bo'lishi kerak")
-    database: Database = request.app["database"]
-    expires_at = await database.activate_ai_subscription(
-        user_id,
-        days=days,
-        admin_id=int(admin["id"]),
-        note=str(data.get("note", "")),
-    )
-    return web.json_response({"ok": True, "expires_at": expires_at})
 
 
 async def save_profile_handler(request: web.Request) -> web.Response:
@@ -354,11 +301,6 @@ async def start_web_app(
             web.post("/api/profile", save_profile_handler),
             web.post("/api/phone/request-code", request_code_handler),
             web.post("/api/phone/verify", verify_code_handler),
-            web.get("/api/admin/stats", admin_stats_handler),
-            web.get("/api/admin/users", admin_users_handler),
-            web.get("/api/admin/search", admin_search_handler),
-            web.get("/api/admin/errors", admin_errors_handler),
-            web.post("/api/admin/subscriptions", admin_subscription_handler),
         ]
     )
     runner = web.AppRunner(app)
@@ -426,7 +368,6 @@ WEBAPP_HTML = """<!doctype html>
     .item { display: flex; justify-content: space-between; gap: 12px; padding: 13px; border: 1px solid var(--border); border-radius: 16px; background: rgba(42,171,238,.07); }
     .item strong { display: block; font-size: 13px; word-break: break-word; }
     .item span { color: var(--muted); font-size: 11px; }
-    .admin { display: none; }
     .row { display: flex; gap: 9px; margin-top: 10px; }
     .row input { flex: 1; }
     .toast { position: fixed; left: 14px; right: 14px; bottom: 18px; display: none; padding: 13px 14px; border-radius: 15px; color: #fff; background: rgba(8,16,28,.94); box-shadow: 0 18px 50px rgba(0,0,0,.35); }
@@ -483,31 +424,16 @@ WEBAPP_HTML = """<!doctype html>
 
     <section class="card">
       <h2>AI qo'shiq obunasi</h2>
-      <p class="muted">Matn asosida AI musiqa yaratish uchun 30 kunlik obuna.</p>
+      <p class="muted">Matn asosida AI musiqa yaratish uchun muddatli obuna.</p>
       <div class="list">
         <article class="item">
-          <div><strong>30 kunlik AI tarif</strong><span id="ai_plan_model">Model tekshirilmoqda...</span></div>
+          <div><strong>30 / 90 / 365 kunlik AI tarif</strong><span id="ai_plan_model">Model tekshirilmoqda...</span></div>
           <span>Narx admin bilan</span>
         </article>
       </div>
       <p class="muted">Obuna olish uchun botda “AI qo'shiq / Obuna” tugmasini yoki /tarif komandasini bosing.</p>
     </section>
 
-    <section class="card admin" id="admin_section">
-      <h2>Admin: AI obuna boshqaruvi</h2>
-      <p class="muted">User ID, username, ism yoki telefon orqali qidiring. To'lovni kartada tekshirgach obuna oching.</p>
-      <div class="row">
-        <input id="admin_query" placeholder="ID, username, ism yoki telefon" />
-        <button onclick="adminSearch()">Qidirish</button>
-      </div>
-      <div class="grid">
-        <div><label>User ID</label><input id="admin_user_id" inputmode="numeric" /></div>
-        <div><label>Kun</label><input id="admin_days" inputmode="numeric" value="30" /></div>
-        <div class="full"><label>Izoh</label><input id="admin_note" placeholder="Masalan: karta orqali to'landi" /></div>
-      </div>
-      <div class="actions"><button onclick="activateSubscription()">AI obuna ochish</button></div>
-      <div class="list" id="admin_results"></div>
-    </section>
   </main>
   <div class="toast" id="toast"></div>
 
@@ -584,10 +510,6 @@ WEBAPP_HTML = """<!doctype html>
         setAvatar(avatarData, first, last);
         showStatus(p.phone_verified ? "Telefon tasdiqlangan." : "Telefon hali tasdiqlanmagan.", !!p.phone_verified);
         renderHistory(data.downloads || []);
-        if (data.is_admin) {
-          document.getElementById("admin_section").style.display = "block";
-          adminSearch();
-        }
       } catch (error) {
         showStatus(error.message, false);
         toast(error.message, false);
@@ -634,31 +556,6 @@ WEBAPP_HTML = """<!doctype html>
         await load();
       } catch (error) { showStatus(error.message, false); toast(error.message, false); }
     }
-    async function adminSearch() {
-      try {
-        const q = encodeURIComponent(document.getElementById("admin_query").value || "");
-        const data = await api("/api/admin/search?q=" + q);
-        const root = document.getElementById("admin_results");
-        root.innerHTML = (data.users || []).map(user => `
-          <article class="item" onclick="document.getElementById('admin_user_id').value='${Number(user.user_id)}'">
-            <div><strong>${escapeHtml(user.full_name || (user.first_name + " " + user.last_name).trim() || user.username || user.user_id)}</strong><span>${user.user_id} · ${escapeHtml(user.phone || "telefon yo'q")}</span></div>
-            <span>${user.ai_subscription_until ? "AI: " + dateText(user.ai_subscription_until) : "AI yo'q"}</span>
-          </article>`).join("") || "<div class='muted'>User topilmadi.</div>";
-      } catch (error) { toast(error.message, false); }
-    }
-    async function activateSubscription() {
-      try {
-        const payload = {
-          user_id: document.getElementById("admin_user_id").value,
-          days: document.getElementById("admin_days").value,
-          note: document.getElementById("admin_note").value
-        };
-        const data = await api("/api/admin/subscriptions", {method:"POST", body: JSON.stringify(payload)});
-        toast("AI obuna ochildi: " + dateText(data.expires_at));
-        adminSearch();
-      } catch (error) { toast(error.message, false); }
-    }
-
     if (!initData) showStatus("WebApp'ni Telegram ichidagi Open tugmasi orqali oching.", false);
     else load();
   </script>

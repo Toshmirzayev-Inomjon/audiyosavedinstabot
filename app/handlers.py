@@ -24,6 +24,8 @@ from app.jobs import JobCancelled, JobContext, JobManager
 from app.keyboards import (
     CANCEL_BUTTON,
     MENU_LABELS,
+    admin_contact_keyboard,
+    ai_tariff_keyboard,
     cancel_keyboard,
     history_keyboard,
     language_keyboard,
@@ -35,7 +37,6 @@ from app.services.downloader import (
     DownloadService,
     MediaDownloadError,
     platform_for_url,
-    search_query,
 )
 from app.services.media import MediaConversionError, MediaService
 from app.services.telegram_downloader import (
@@ -88,6 +89,11 @@ async def ensure_user(message: Message, database: Database) -> None:
 
 def _looks_like_url(text: str) -> bool:
     return text.strip().startswith(("http://", "https://"))
+
+
+def _command_argument(message: Message) -> str:
+    parts = (message.text or "").split(maxsplit=1)
+    return parts[1].strip() if len(parts) == 2 else ""
 
 
 def _input_file(message: Message, *, allow_audio: bool = True):
@@ -149,11 +155,9 @@ async def _resolve_source(
     if message.text and message.text != CANCEL_BUTTON:
         raw = message.text.strip()
         if prefer_audio and not _looks_like_url(raw):
-            return await services.downloader.download(
-                search_query(raw),
+            return await services.downloader.search(
+                raw,
                 directory,
-                audio=True,
-                quality="audio",
                 progress=progress,
                 cancel_event=cancel_event,
             )
@@ -358,13 +362,104 @@ def build_router(services: Services) -> Router:
             return
         await message.answer(
             "🎼 <b>AI qo'shiq tarifi</b>\n\n"
-            "Muddat: 30 kun\n"
-            "Narx: admin bilan kelishiladi\n"
+            "Muddatlardan birini tanlang: 30, 90 yoki 365 kun.\n"
+            "Narx tanlangan muddat bo'yicha admin bilan kelishiladi.\n"
             f"AI server: ulangan ({settings.huggingface_music_model})\n\n"
             "Avtomatik to'lov yo'q. Obuna olish uchun adminga yozing, "
-            "admin to'lovni tekshirgandan keyin WebApp admin panelidan sizga "
-            "AI obuna ochib beradi.",
+            "admin to'lovni tekshirgandan keyin botdagi admin komandasi orqali "
+            "AI obunani ochib beradi.",
             reply_markup=main_keyboard(),
+        )
+        await message.answer(
+            "Tarif muddatini tanlang:",
+            reply_markup=ai_tariff_keyboard(settings.admin_ids),
+        )
+
+    @router.callback_query(F.data.startswith("ai_plan:"))
+    async def ai_plan_callback(callback: CallbackQuery) -> None:
+        try:
+            days = int((callback.data or "").split(":", maxsplit=1)[1])
+        except (IndexError, ValueError):
+            await callback.answer("Tarif noto'g'ri", show_alert=True)
+            return
+        if days not in {30, 90, 365}:
+            await callback.answer("Tarif noto'g'ri", show_alert=True)
+            return
+        await callback.message.answer(
+            "🎼 <b>AI obuna so'rovi</b>\n\n"
+            f"Tanlangan muddat: <b>{days} kun</b>\n"
+            f"Telegram ID: <code>{callback.from_user.id}</code>\n\n"
+            "Adminga shu xabar bilan murojaat qiling. To'lov tekshirilgach "
+            "admin obunani faollashtiradi.",
+            reply_markup=admin_contact_keyboard(settings.admin_ids),
+        )
+        await callback.answer()
+
+    @router.message(Command("admin"))
+    async def admin_handler(message: Message) -> None:
+        if not message.from_user or message.from_user.id not in settings.admin_ids:
+            await message.answer("Bu komanda faqat admin uchun.")
+            return
+        query = _command_argument(message)
+        if not query:
+            await message.answer(
+                "<b>Admin komandalar</b>\n\n"
+                "/admin USER - ID, username, ism yoki telefon bo'yicha qidirish\n"
+                "/aiactivate USER_ID DAYS - AI obunani faollashtirish\n\n"
+                "Misol: <code>/aiactivate 123456789 30</code>"
+            )
+            return
+        users = await database.admin_search_users(query, limit=10)
+        if not users:
+            await message.answer("Foydalanuvchi topilmadi.")
+            return
+        lines = ["<b>Topilgan foydalanuvchilar:</b>"]
+        for user in users:
+            username = f"@{user['username']}" if user["username"] else "username yo'q"
+            name = user["full_name"] or (
+                f"{user['first_name']} {user['last_name']}".strip()
+            )
+            lines.append(
+                f"\n<code>{user['user_id']}</code> | {name or 'Ismsiz'} | "
+                f"{username} | {user['phone'] or 'telefon yo‘q'}"
+            )
+        await message.answer("".join(lines))
+
+    @router.message(Command("aiactivate"))
+    async def admin_activate_ai_handler(message: Message) -> None:
+        if not message.from_user or message.from_user.id not in settings.admin_ids:
+            await message.answer("Bu komanda faqat admin uchun.")
+            return
+        parts = _command_argument(message).split()
+        if len(parts) != 2:
+            await message.answer(
+                "Format: <code>/aiactivate USER_ID DAYS</code>\n"
+                "Misol: <code>/aiactivate 123456789 30</code>"
+            )
+            return
+        try:
+            user_id, days = (int(item) for item in parts)
+        except ValueError:
+            await message.answer("USER_ID va DAYS son bo'lishi kerak.")
+            return
+        if days not in {30, 90, 365}:
+            await message.answer("Muddat faqat 30, 90 yoki 365 kun bo'lishi mumkin.")
+            return
+        users = await database.admin_search_users(str(user_id), limit=1)
+        if not users or users[0]["user_id"] != user_id:
+            await message.answer("Bu Telegram ID bot foydalanuvchilari orasida topilmadi.")
+            return
+        expires_at = await database.activate_ai_subscription(
+            user_id,
+            days=days,
+            admin_id=message.from_user.id,
+            note="Telegram admin command",
+        )
+        await message.answer(
+            "✅ AI obuna faollashtirildi.\n"
+            f"User ID: <code>{user_id}</code>\n"
+            f"Muddat: {days} kun\n"
+            f"Expires: <code>{expires_at}</code>"
         )
 
     @router.message(Command("cancel"))

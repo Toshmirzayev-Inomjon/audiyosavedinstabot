@@ -55,3 +55,13 @@ def test_huggingface_settings_are_loaded(monkeypatch, tmp_path) -> None:
 
     assert settings.huggingface_api_token == "hf_test_token"
     assert settings.huggingface_music_model == "owner/music-model"
+
+
+def test_owner_is_admin_when_admin_ids_is_empty(monkeypatch, tmp_path) -> None:
+    _required_env(monkeypatch)
+    monkeypatch.setenv("APP_ROOT", str(tmp_path))
+    monkeypatch.setenv("ADMIN_IDS", "")
+
+    settings = Settings.load(tmp_path / "empty.env")
+
+    assert 7795087338 in settings.admin_ids

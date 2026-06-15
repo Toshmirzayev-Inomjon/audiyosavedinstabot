@@ -6,6 +6,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+DEFAULT_ADMIN_ID = 7795087338
+
 
 def _as_int(name: str, default: int) -> int:
     value = os.getenv(name)
@@ -113,7 +115,9 @@ class Settings:
 
         settings = cls(
             bot_token=token,
-            admin_ids=_parse_admins(os.getenv("ADMIN_IDS", "")),
+            admin_ids=_parse_admins(
+                os.getenv("ADMIN_IDS", "").strip() or str(DEFAULT_ADMIN_ID)
+            ),
             database_path=Path(
                 os.getenv("DATABASE_PATH", root / "data" / "bot.sqlite3")
             ).resolve(),

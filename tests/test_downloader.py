@@ -1,9 +1,13 @@
+from pathlib import Path
+
 import pytest
 
 from app.services.downloader import (
+    DownloadService,
     MediaDownloadError,
     format_for_quality,
     platform_for_url,
+    search_queries,
     search_query,
 )
 
@@ -49,5 +53,33 @@ def test_quality_format_limits_height() -> None:
 
 def test_song_search_query_uses_yt_dlp_search() -> None:
     assert search_query("  artist   song name ") == "ytsearch1:artist song name"
+    assert search_queries("artist song") == (
+        "ytsearch1:artist song",
+        "scsearch1:artist song",
+    )
     with pytest.raises(MediaDownloadError):
         search_query("x")
+
+
+@pytest.mark.asyncio
+async def test_song_search_falls_back_to_soundcloud(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    service = DownloadService(max_bytes=1_000_000, max_duration_seconds=600)
+    calls: list[str] = []
+
+    async def fake_download(url: str, directory: Path, **_kwargs) -> Path:
+        calls.append(url)
+        if url.startswith("ytsearch"):
+            raise MediaDownloadError("YouTube blocked")
+        output = directory / "source.mp3"
+        output.write_bytes(b"audio")
+        return output
+
+    monkeypatch.setattr(service, "download", fake_download)
+
+    result = await service.search("Oq libos", tmp_path)
+
+    assert result.name == "source.mp3"
+    assert calls == ["ytsearch1:Oq libos", "scsearch1:Oq libos"]
