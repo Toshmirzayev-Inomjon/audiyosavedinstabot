@@ -187,6 +187,8 @@ class DownloadService:
             "restrictfilenames": True,
             "progress_hooks": [progress_hook],
             "merge_output_format": "mp4",
+            "js_runtimes": {"deno": {}},
+            "remote_components": {"ejs:npm"},
         }
         if self.cookies_file:
             if self.cookies_file.is_file():

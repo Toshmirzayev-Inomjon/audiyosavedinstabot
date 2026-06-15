@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import logging
+import shutil
 import time
 from html import escape
 from pathlib import Path
@@ -106,6 +107,7 @@ async def health_handler(request: web.Request) -> web.Response:
             "ai_configured": bool(settings.huggingface_api_token),
             "ai_model": settings.huggingface_music_model,
             "admin_configured": bool(settings.admin_ids),
+            "deno_available": bool(shutil.which("deno")),
         }
     )
 

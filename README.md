@@ -14,7 +14,10 @@ o'tkazadi.
 - Aylana videoni ortiqcha effektlarsiz oddiy videoga o'tkazish
 - Yuklash tarixi va katta fayllar uchun vaqtinchalik HTTPS link
 - Telegram WebApp: profil, telefon tasdiqlash, parol, profil rasmi va so'rovlar tarixi
-- Admin WebApp: foydalanuvchini ID/username/ism/telefon bo'yicha qidirish va AI obunani qo'lda faollashtirish
+- Telegram admin komandasi: foydalanuvchini qidirish va AI obunani qo'lda faollashtirish
+
+YouTube'ning yangi JavaScript challenge'lari uchun Docker image ichida Deno
+runtime va `yt-dlp[default]` EJS solver o'rnatiladi.
 
 ## Pullik oqimlar
 
@@ -71,9 +74,8 @@ DATABASE_URL=${{Postgres.DATABASE_URL}}
 Telegram ichidagi `Open` tugmasi `WEBAPP_PUBLIC_URL` orqali ishlaydi. Railway'da
 public domain bo'lsa bot `RAILWAY_PUBLIC_DOMAIN`dan avtomatik foydalanadi.
 
-WebApp oddiy foydalanuvchiga faqat profil va so'rovlar tarixini ko'rsatadi. Admin
-WebApp barcha foydalanuvchilar uchun faqat profil, tarix va AI obuna holatini
-ko'rsatadi. Admin boshqaruvi WebApp'da emas, Telegram bot komandalarida ishlaydi:
+WebApp barcha foydalanuvchilarga faqat profil, tarix va AI obuna holatini
+ko'rsatadi. Admin boshqaruvi Telegram bot komandalarida ishlaydi:
 
 ```text
 /admin USER
