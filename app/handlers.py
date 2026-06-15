@@ -309,11 +309,19 @@ def build_router(services: Services) -> Router:
         await ensure_user(message, database)
         if not message.from_user:
             return
+        if not settings.huggingface_api_token:
+            await message.answer(
+                "🎼 AI musiqa serveri hali ulanmagan.\n\n"
+                "Admin Railway Variables ichiga HUGGINGFACE_API_TOKEN yozishi kerak.",
+                reply_markup=main_keyboard(),
+            )
+            return
         until = await database.ai_subscription_until(message.from_user.id)
         if until:
             await message.answer(
                 "🎼 AI musiqa obunangiz faol.\n"
-                "Bu bo'lim matndan qo'shiq yaratish uchun tayyorlanmoqda.",
+                f"AI modeli ulangan: <code>{settings.huggingface_music_model}</code>\n"
+                "Matndan qo'shiq yaratish interfeysi tayyorlanmoqda.",
                 reply_markup=main_keyboard(),
             )
             return

@@ -78,6 +78,8 @@ class Settings:
     telegram_upload_mb: int = 49
     queue_concurrency: int = 2
     public_file_ttl_seconds: int = 3_600
+    huggingface_api_token: str | None = None
+    huggingface_music_model: str = "facebook/musicgen-small"
 
     @property
     def max_download_bytes(self) -> int:
@@ -134,6 +136,13 @@ class Settings:
             telegram_upload_mb=_as_int("TELEGRAM_UPLOAD_MB", 49),
             queue_concurrency=_as_int("QUEUE_CONCURRENCY", 2),
             public_file_ttl_seconds=_as_int("PUBLIC_FILE_TTL_SECONDS", 3_600),
+            huggingface_api_token=(
+                os.getenv("HUGGINGFACE_API_TOKEN", "").strip() or None
+            ),
+            huggingface_music_model=os.getenv(
+                "HUGGINGFACE_MUSIC_MODEL",
+                "facebook/musicgen-small",
+            ).strip(),
         )
         if settings.max_download_mb <= 0 or settings.max_duration_minutes <= 0:
             raise ValueError("Media limitlari musbat bo'lishi kerak")
@@ -147,6 +156,8 @@ class Settings:
             raise ValueError("Limit sozlamalari musbat bo'lishi kerak")
         if settings.bot_api_local and not settings.bot_api_base:
             raise ValueError("BOT_API_LOCAL=true bo'lsa BOT_API_BASE berilishi kerak")
+        if not settings.huggingface_music_model:
+            raise ValueError("HUGGINGFACE_MUSIC_MODEL bo'sh bo'lishi mumkin emas")
         return settings
 
     def prepare_directories(self) -> None:

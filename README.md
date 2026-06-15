@@ -25,6 +25,16 @@ AI qo'shiq yaratish alohida pullik obuna bo'ladi, lekin hozir avtomatik to'lov
 yo'q. Foydalanuvchi adminga murojaat qiladi, admin karta orqali to'lovni
 tekshiradi va WebApp admin panelidan AI obunani qo'lda ochadi.
 
+Hugging Face ulanishi serverning maxfiy Variables qismida saqlanadi:
+
+```env
+HUGGINGFACE_API_TOKEN=hf_yangi_maxfiy_token
+HUGGINGFACE_MUSIC_MODEL=facebook/musicgen-small
+```
+
+Tokenni `.env.example` yoki GitHub ichiga yozmang. Hugging Face Inference
+foydalanishi hisob krediti va provider limitlariga bog'liq.
+
 ## Bepul AI bo'yicha real variantlar
 
 Haqiqiy "tekin va limitsiz API" amalda yo'q: bepul servislar limit qo'yadi yoki

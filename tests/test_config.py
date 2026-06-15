@@ -7,6 +7,8 @@ def _required_env(monkeypatch) -> None:
     monkeypatch.delenv("WEBAPP_PORT", raising=False)
     monkeypatch.delenv("PORT", raising=False)
     monkeypatch.delenv("RAILWAY_PUBLIC_DOMAIN", raising=False)
+    monkeypatch.delenv("HUGGINGFACE_API_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGINGFACE_MUSIC_MODEL", raising=False)
 
 
 def test_railway_domain_is_used_for_webapp(monkeypatch, tmp_path) -> None:
@@ -41,3 +43,15 @@ def test_railway_port_is_used_when_webapp_port_is_missing(
     settings = Settings.load(tmp_path / "empty.env")
 
     assert settings.webapp_port == 4321
+
+
+def test_huggingface_settings_are_loaded(monkeypatch, tmp_path) -> None:
+    _required_env(monkeypatch)
+    monkeypatch.setenv("APP_ROOT", str(tmp_path))
+    monkeypatch.setenv("HUGGINGFACE_API_TOKEN", "hf_test_token")
+    monkeypatch.setenv("HUGGINGFACE_MUSIC_MODEL", "owner/music-model")
+
+    settings = Settings.load(tmp_path / "empty.env")
+
+    assert settings.huggingface_api_token == "hf_test_token"
+    assert settings.huggingface_music_model == "owner/music-model"
