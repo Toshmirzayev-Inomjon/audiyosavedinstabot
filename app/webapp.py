@@ -106,6 +106,8 @@ async def health_handler(request: web.Request) -> web.Response:
             "ok": True,
             "ai_configured": bool(settings.huggingface_api_token),
             "ai_model": settings.huggingface_music_model,
+            "voice_search_configured": bool(settings.huggingface_api_token),
+            "asr_model": settings.huggingface_asr_model,
             "admin_configured": bool(settings.admin_ids),
             "deno_available": bool(shutil.which("deno")),
         }
@@ -177,6 +179,8 @@ async def me_handler(request: web.Request) -> web.Response:
             "ai_subscription_until": ai_until,
             "ai_configured": bool(settings.huggingface_api_token),
             "ai_model": settings.huggingface_music_model,
+            "voice_search_configured": bool(settings.huggingface_api_token),
+            "asr_model": settings.huggingface_asr_model,
             "language": language,
             "bot_username": request.app["bot_username"],
         }
@@ -396,6 +400,7 @@ WEBAPP_HTML = """<!doctype html>
           <h2 id="display_name">Profil</h2>
           <p class="muted" id="username">Telegram orqali ochilgan</p>
           <p class="muted" id="ai_server">AI server: tekshirilmoqda...</p>
+          <p class="muted" id="voice_search">Ovozli qidiruv: tekshirilmoqda...</p>
           <p class="muted" id="ai_status">AI obuna: tekshirilmoqda...</p>
         </div>
       </div>
@@ -507,6 +512,7 @@ WEBAPP_HTML = """<!doctype html>
         document.getElementById("last_name").value = p.last_name || user.last_name || "";
         document.getElementById("phone").value = p.phone || "";
         document.getElementById("ai_server").textContent = data.ai_configured ? `AI server: ulangan (${data.ai_model})` : "AI server: ulanmagan";
+        document.getElementById("voice_search").textContent = data.voice_search_configured ? `Ovozli qidiruv: ulangan (${data.asr_model})` : "Ovozli qidiruv: ulanmagan";
         document.getElementById("ai_status").textContent = data.ai_subscription_until ? `AI obuna: ${dateText(data.ai_subscription_until)} gacha` : "AI obuna: faol emas";
         document.getElementById("ai_plan_model").textContent = data.ai_configured ? `AI model: ${data.ai_model}` : "AI server ulanmagan";
         setAvatar(avatarData, first, last);

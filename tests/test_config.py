@@ -9,6 +9,7 @@ def _required_env(monkeypatch) -> None:
     monkeypatch.delenv("RAILWAY_PUBLIC_DOMAIN", raising=False)
     monkeypatch.delenv("HUGGINGFACE_API_TOKEN", raising=False)
     monkeypatch.delenv("HUGGINGFACE_MUSIC_MODEL", raising=False)
+    monkeypatch.delenv("HUGGINGFACE_ASR_MODEL", raising=False)
 
 
 def test_railway_domain_is_used_for_webapp(monkeypatch, tmp_path) -> None:
@@ -50,11 +51,13 @@ def test_huggingface_settings_are_loaded(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("APP_ROOT", str(tmp_path))
     monkeypatch.setenv("HUGGINGFACE_API_TOKEN", "hf_test_token")
     monkeypatch.setenv("HUGGINGFACE_MUSIC_MODEL", "owner/music-model")
+    monkeypatch.setenv("HUGGINGFACE_ASR_MODEL", "owner/asr-model")
 
     settings = Settings.load(tmp_path / "empty.env")
 
     assert settings.huggingface_api_token == "hf_test_token"
     assert settings.huggingface_music_model == "owner/music-model"
+    assert settings.huggingface_asr_model == "owner/asr-model"
 
 
 def test_owner_is_admin_when_admin_ids_is_empty(monkeypatch, tmp_path) -> None:

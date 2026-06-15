@@ -86,6 +86,30 @@ class MediaService:
         )
         return destination
 
+    async def to_wav(
+        self,
+        source: Path,
+        destination: Path,
+        *,
+        cancel_event: asyncio.Event | None = None,
+    ) -> Path:
+        await self._run(
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(source),
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-codec:a",
+            "pcm_s16le",
+            str(destination),
+            cancel_event=cancel_event,
+        )
+        return destination
+
     async def to_circle(self, source: Path, destination: Path) -> Path:
         await self._run(
             "ffmpeg",

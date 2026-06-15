@@ -82,6 +82,7 @@ class Settings:
     public_file_ttl_seconds: int = 3_600
     huggingface_api_token: str | None = None
     huggingface_music_model: str = "facebook/musicgen-small"
+    huggingface_asr_model: str = "openai/whisper-large-v3-turbo"
 
     @property
     def max_download_bytes(self) -> int:
@@ -147,6 +148,10 @@ class Settings:
                 "HUGGINGFACE_MUSIC_MODEL",
                 "facebook/musicgen-small",
             ).strip(),
+            huggingface_asr_model=os.getenv(
+                "HUGGINGFACE_ASR_MODEL",
+                "openai/whisper-large-v3-turbo",
+            ).strip(),
         )
         if settings.max_download_mb <= 0 or settings.max_duration_minutes <= 0:
             raise ValueError("Media limitlari musbat bo'lishi kerak")
@@ -162,6 +167,8 @@ class Settings:
             raise ValueError("BOT_API_LOCAL=true bo'lsa BOT_API_BASE berilishi kerak")
         if not settings.huggingface_music_model:
             raise ValueError("HUGGINGFACE_MUSIC_MODEL bo'sh bo'lishi mumkin emas")
+        if not settings.huggingface_asr_model:
+            raise ValueError("HUGGINGFACE_ASR_MODEL bo'sh bo'lishi mumkin emas")
         return settings
 
     def prepare_directories(self) -> None:

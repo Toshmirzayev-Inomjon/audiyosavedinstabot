@@ -1,10 +1,11 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.methods import SendVideoNote
 
-from app.handlers import _send_video_note_or_fallback
+from app.handlers import _input_file, _resolve_source, _send_video_note_or_fallback
 
 
 class VoiceForbiddenMessage:
@@ -19,6 +20,34 @@ class VoiceForbiddenMessage:
 
     async def answer_video(self, *_args, **_kwargs) -> None:
         self.fallback_sent = True
+
+
+class VoiceMessage:
+    def __init__(self) -> None:
+        self.voice = type(
+            "Voice",
+            (),
+            {"file_id": "voice-file-id", "file_size": 100, "duration": 3},
+        )()
+        self.video_note = None
+        self.video = None
+        self.audio = None
+        self.document = None
+
+
+class EmptyMessage:
+    text = None
+
+
+class FakeDownloader:
+    def __init__(self) -> None:
+        self.url = ""
+
+    async def download(self, url: str, directory: Path, **_kwargs) -> Path:
+        self.url = url
+        output = directory / "source.mp4"
+        output.write_bytes(b"video")
+        return output
 
 
 @pytest.mark.asyncio
@@ -37,3 +66,27 @@ async def test_video_note_forbidden_falls_back_to_regular_video(
 
     assert sent_as_note is False
     assert message.fallback_sent is True
+
+
+def test_input_file_accepts_voice_messages() -> None:
+    media, filename = _input_file(VoiceMessage(), allow_audio=True)
+
+    assert media.file_id == "voice-file-id"
+    assert filename == "voice.ogg"
+
+
+@pytest.mark.asyncio
+async def test_resolve_source_uses_text_override_for_saved_url(tmp_path: Path) -> None:
+    downloader = FakeDownloader()
+    services = SimpleNamespace(downloader=downloader, telegram=None, settings=None)
+
+    result = await _resolve_source(
+        EmptyMessage(),
+        bot=None,
+        services=services,
+        directory=tmp_path,
+        text_override="https://youtu.be/abc123",
+    )
+
+    assert result.name == "source.mp4"
+    assert downloader.url == "https://youtu.be/abc123"

@@ -22,6 +22,7 @@ from app.handlers import Services, build_router
 from app.jobs import JobManager
 from app.services.downloader import DownloadService
 from app.services.media import MediaService
+from app.services.speech import SpeechRecognitionService
 from app.services.telegram_downloader import TelegramDownloadService
 from app.tunnel import QuickTunnel, start_quick_tunnel
 from app.webapp import start_web_app
@@ -43,12 +44,12 @@ async def configure_bot_profile(
         ]
     )
     await bot.set_my_short_description(
-        "Link orqali video/MP3 yuklaydi va qo'shiq nomi bo'yicha musiqa topadi."
+        "Link, matn yoki ovozli xabar orqali video/MP3 va musiqa topadi."
     )
     await bot.set_my_description(
-        "Video va MP3 yuklash, qo'shiq nomi yoki ijrochi bo'yicha musiqa qidirish, "
-        "aylana video tayyorlash va uni oddiy videoga o'tkazish. Open tugmasi "
-        "orqali profil va so'rovlaringizni ko'ring."
+        "Video va MP3 yuklash, qo'shiq nomi, ijrochi yoki ovozli xabar bo'yicha "
+        "musiqa qidirish, aylana video tayyorlash va uni oddiy videoga o'tkazish. "
+        "Open tugmasi orqali profil va so'rovlaringizni ko'ring."
     )
     for admin_id in admin_ids:
         try:
@@ -123,6 +124,10 @@ async def run() -> None:
         media=MediaService(),
         telegram=telegram,
         jobs=JobManager(settings.queue_concurrency),
+        speech=SpeechRecognitionService(
+            api_token=settings.huggingface_api_token,
+            model=settings.huggingface_asr_model,
+        ),
     )
 
     session = None

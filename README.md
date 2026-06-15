@@ -8,6 +8,7 @@ o'tkazadi.
 
 - YouTube, YouTube Music, Instagram, TikTok, SoundCloud, Facebook va X/Twitter linklaridan media yuklash
 - Qo'shiq nomi yoki ijrochi nomi bilan MP3 qidirish (`yt-dlp` `ytsearch1`)
+- Voice message orqali qo'shiq nomini aytib qidirish (`Hugging Face` ASR)
 - Video sifatini tanlash: 360p, 720p, 1080p yoki MP3
 - Video/audio fayldan MP3 qilish
 - Videoni Telegram aylana video (`video_note`) qilish
@@ -34,6 +35,7 @@ Hugging Face ulanishi serverning maxfiy Variables qismida saqlanadi:
 ```env
 HUGGINGFACE_API_TOKEN=hf_yangi_maxfiy_token
 HUGGINGFACE_MUSIC_MODEL=facebook/musicgen-small
+HUGGINGFACE_ASR_MODEL=openai/whisper-large-v3-turbo
 ```
 
 Tokenni `.env.example` yoki GitHub ichiga yozmang. Hugging Face Inference
