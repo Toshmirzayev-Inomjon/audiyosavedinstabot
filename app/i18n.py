@@ -5,13 +5,14 @@ TEXTS = {
         "welcome": (
             "<b>Assalomu alaykum!</b>\n\n"
             "Bot link orqali video va MP3 yuklaydi, qo'shiq nomi yoki ijrochi "
-            "bo'yicha musiqa qidiradi, video note tayyorlaydi."
+            "bo'yicha musiqa qidiradi, video note tayyorlaydi. AI qo'shiq "
+            "tarifini /tarif orqali ko'rish mumkin."
         ),
         "help": (
             "<b>Yordam</b>\n\n"
             "Video uchun havola yuboring. MP3 uchun havola yoki qo'shiq nomini "
             "yozing. Aylana video va oddiy videoga o'tkazish bepul. /cancel "
-            "aktiv amalni bekor qiladi."
+            "aktiv amalni bekor qiladi. AI obuna uchun /tarif ni bosing."
         ),
     },
     "ru": {

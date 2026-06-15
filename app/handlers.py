@@ -11,7 +11,7 @@ from pathlib import Path
 
 from aiogram import Bot, F, Router
 from aiogram.enums import ChatAction
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -50,6 +50,7 @@ logger = logging.getLogger(__name__)
 VIDEO_LABELS = {labels["video"] for labels in MENU_LABELS.values()}
 MP3_LABELS = {labels["mp3"] for labels in MENU_LABELS.values()}
 MUSIC_SEARCH_LABELS = {labels["music_search"] for labels in MENU_LABELS.values()}
+AI_MUSIC_LABELS = {labels["ai_music"] for labels in MENU_LABELS.values()}
 CIRCLE_LABELS = {labels["circle"] for labels in MENU_LABELS.values()}
 RECTANGLE_LABELS = {labels["rectangle"] for labels in MENU_LABELS.values()}
 HISTORY_LABELS = {labels["history"] for labels in MENU_LABELS.values()}
@@ -251,6 +252,34 @@ async def _show_error(message: Message, exc: Exception) -> None:
     await message.answer(f"Xato: {text}\n\nQayta yuboring yoki /cancel ni bosing.")
 
 
+async def _send_video_note_or_fallback(
+    message: Message,
+    output: Path,
+    *,
+    duration: int,
+) -> bool:
+    try:
+        await message.answer_video_note(
+            FSInputFile(output),
+            duration=duration,
+            length=640,
+        )
+        return True
+    except TelegramBadRequest as exc:
+        if "VOICE_MESSAGES_FORBIDDEN" not in str(exc).upper():
+            raise
+        await message.answer_video(
+            FSInputFile(output),
+            caption=(
+                "Telegram maxfiylik sozlamangiz aylana/ovozli xabarni qabul "
+                "qilmadi. Shu sababli video oddiy formatda yuborildi."
+            ),
+            supports_streaming=True,
+            reply_markup=main_keyboard(),
+        )
+        return False
+
+
 class _ProgressUpdater:
     def __init__(self, status: Message) -> None:
         self.status = status
@@ -304,7 +333,8 @@ def build_router(services: Services) -> Router:
         )
         await message.answer(i18n_text(language, "help"), reply_markup=main_keyboard(language))
 
-    @router.message(Command("ai"))
+    @router.message(Command("ai", "tarif"))
+    @router.message(F.text.in_(AI_MUSIC_LABELS))
     async def ai_handler(message: Message) -> None:
         await ensure_user(message, database)
         if not message.from_user:
@@ -319,15 +349,19 @@ def build_router(services: Services) -> Router:
         until = await database.ai_subscription_until(message.from_user.id)
         if until:
             await message.answer(
-                "🎼 AI musiqa obunangiz faol.\n"
+                "🎼 <b>AI qo'shiq obunangiz faol</b>\n\n"
+                "Tarif: 30 kunlik AI obuna\n"
                 f"AI modeli ulangan: <code>{settings.huggingface_music_model}</code>\n"
-                "Matndan qo'shiq yaratish interfeysi tayyorlanmoqda.",
+                "Holat: matndan qo'shiq yaratish generatori tayyorlanmoqda.",
                 reply_markup=main_keyboard(),
             )
             return
         await message.answer(
-            "🎼 AI qo'shiq yaratish pullik obuna orqali ochiladi.\n\n"
-            "Hozir avtomatik to'lov yo'q. Obuna olish uchun adminga yozing, "
+            "🎼 <b>AI qo'shiq tarifi</b>\n\n"
+            "Muddat: 30 kun\n"
+            "Narx: admin bilan kelishiladi\n"
+            f"AI server: ulangan ({settings.huggingface_music_model})\n\n"
+            "Avtomatik to'lov yo'q. Obuna olish uchun adminga yozing, "
             "admin to'lovni tekshirgandan keyin WebApp admin panelidan sizga "
             "AI obuna ochib beradi.",
             reply_markup=main_keyboard(),
@@ -670,13 +704,17 @@ def build_router(services: Services) -> Router:
                 await _check_output(output, settings)
                 info = await services.media.probe(output)
                 await bot.send_chat_action(message.chat.id, ChatAction.UPLOAD_VIDEO_NOTE)
-                await message.answer_video_note(
-                    FSInputFile(output),
+                sent_as_note = await _send_video_note_or_fallback(
+                    message,
+                    output,
                     duration=min(60, max(1, int(info.duration))),
-                    length=640,
                 )
             await state.clear()
-            await message.answer("✅ Aylana video tayyor.", reply_markup=main_keyboard())
+            if sent_as_note:
+                await message.answer(
+                    "✅ Aylana video tayyor.",
+                    reply_markup=main_keyboard(),
+                )
         except Exception as exc:
             await _show_error(message, exc)
         finally:

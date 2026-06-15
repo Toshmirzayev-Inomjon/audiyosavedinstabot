@@ -27,7 +27,8 @@ async def configure_bot_profile(bot: Bot, webapp_public_url: str | None) -> None
             BotCommand(command="start", description="Botni ochish va xizmatlarni ko'rish"),
             BotCommand(command="help", description="Botdan foydalanish bo'yicha yordam"),
             BotCommand(command="history", description="Yuklash tarixini ko'rish"),
-            BotCommand(command="ai", description="AI qo'shiq obunasi haqida"),
+            BotCommand(command="ai", description="AI qo'shiq va obuna holati"),
+            BotCommand(command="tarif", description="AI obuna tarifini ko'rish"),
             BotCommand(command="cancel", description="Joriy amalni bekor qilish"),
         ]
     )

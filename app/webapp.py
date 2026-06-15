@@ -106,8 +106,15 @@ async def index_handler(_request: web.Request) -> web.Response:
     return web.Response(text=WEBAPP_HTML, content_type="text/html")
 
 
-async def health_handler(_request: web.Request) -> web.Response:
-    return web.json_response({"ok": True})
+async def health_handler(request: web.Request) -> web.Response:
+    settings: Settings = request.app["settings"]
+    return web.json_response(
+        {
+            "ok": True,
+            "ai_configured": bool(settings.huggingface_api_token),
+            "ai_model": settings.huggingface_music_model,
+        }
+    )
 
 
 async def public_file_handler(request: web.Request) -> web.StreamResponse:
@@ -173,6 +180,8 @@ async def me_handler(request: web.Request) -> web.Response:
                 for item in downloads
             ],
             "ai_subscription_until": ai_until,
+            "ai_configured": bool(settings.huggingface_api_token),
+            "ai_model": settings.huggingface_music_model,
             "language": language,
             "is_admin": user_id in settings.admin_ids,
             "bot_username": request.app["bot_username"],
@@ -443,6 +452,7 @@ WEBAPP_HTML = """<!doctype html>
         <div>
           <h2 id="display_name">Profil</h2>
           <p class="muted" id="username">Telegram orqali ochilgan</p>
+          <p class="muted" id="ai_server">AI server: tekshirilmoqda...</p>
           <p class="muted" id="ai_status">AI obuna: tekshirilmoqda...</p>
         </div>
       </div>
@@ -469,6 +479,18 @@ WEBAPP_HTML = """<!doctype html>
       <h2>So'rovlarim</h2>
       <p class="muted">Bot orqali yuborgan video/MP3 yuklashlaringiz.</p>
       <div class="list" id="download_history"></div>
+    </section>
+
+    <section class="card">
+      <h2>AI qo'shiq obunasi</h2>
+      <p class="muted">Matn asosida AI musiqa yaratish uchun 30 kunlik obuna.</p>
+      <div class="list">
+        <article class="item">
+          <div><strong>30 kunlik AI tarif</strong><span id="ai_plan_model">Model tekshirilmoqda...</span></div>
+          <span>Narx admin bilan</span>
+        </article>
+      </div>
+      <p class="muted">Obuna olish uchun botda “AI qo'shiq / Obuna” tugmasini yoki /tarif komandasini bosing.</p>
     </section>
 
     <section class="card admin" id="admin_section">
@@ -556,7 +578,9 @@ WEBAPP_HTML = """<!doctype html>
         document.getElementById("first_name").value = p.first_name || user.first_name || "";
         document.getElementById("last_name").value = p.last_name || user.last_name || "";
         document.getElementById("phone").value = p.phone || "";
+        document.getElementById("ai_server").textContent = data.ai_configured ? `AI server: ulangan (${data.ai_model})` : "AI server: ulanmagan";
         document.getElementById("ai_status").textContent = data.ai_subscription_until ? `AI obuna: ${dateText(data.ai_subscription_until)} gacha` : "AI obuna: faol emas";
+        document.getElementById("ai_plan_model").textContent = data.ai_configured ? `AI model: ${data.ai_model}` : "AI server ulanmagan";
         setAvatar(avatarData, first, last);
         showStatus(p.phone_verified ? "Telefon tasdiqlangan." : "Telefon hali tasdiqlanmagan.", !!p.phone_verified);
         renderHistory(data.downloads || []);

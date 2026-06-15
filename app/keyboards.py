@@ -8,6 +8,7 @@ from aiogram.types import (
 VIDEO_BUTTON = "📥 Video yuklab olish"
 MP3_BUTTON = "🎵 MP3 yuklab olish"
 MUSIC_SEARCH_BUTTON = "🔎 Musiqa qidirish"
+AI_MUSIC_BUTTON = "🎼 AI qo'shiq / Obuna"
 CIRCLE_BUTTON = "⭕ Videoni aylana qilish"
 RECTANGLE_BUTTON = "🖼 Aylanani oddiy video qilish"
 CANCEL_BUTTON = "❌ Bekor qilish"
@@ -19,6 +20,7 @@ MENU_LABELS = {
         "video": VIDEO_BUTTON,
         "mp3": MP3_BUTTON,
         "music_search": MUSIC_SEARCH_BUTTON,
+        "ai_music": AI_MUSIC_BUTTON,
         "circle": CIRCLE_BUTTON,
         "rectangle": RECTANGLE_BUTTON,
         "history": HISTORY_BUTTON,
@@ -29,6 +31,7 @@ MENU_LABELS = {
         "video": "📥 Скачать видео",
         "mp3": "🎵 Скачать MP3",
         "music_search": "🔎 Поиск музыки",
+        "ai_music": "🎼 AI-песня / Подписка",
         "circle": "⭕ Сделать круглое видео",
         "rectangle": "🖼 Сделать обычное видео",
         "history": "🕘 История загрузок",
@@ -39,6 +42,7 @@ MENU_LABELS = {
         "video": "📥 Download video",
         "mp3": "🎵 Download MP3",
         "music_search": "🔎 Search music",
+        "ai_music": "🎼 AI song / Subscription",
         "circle": "⭕ Make video note",
         "rectangle": "🖼 Make regular video",
         "history": "🕘 Download history",
@@ -54,6 +58,7 @@ def main_keyboard(language: str = "uz") -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text=labels["video"]), KeyboardButton(text=labels["mp3"])],
             [KeyboardButton(text=labels["music_search"])],
+            [KeyboardButton(text=labels["ai_music"])],
             [KeyboardButton(text=labels["circle"]), KeyboardButton(text=labels["rectangle"])],
             [
                 KeyboardButton(text=labels["history"]),
