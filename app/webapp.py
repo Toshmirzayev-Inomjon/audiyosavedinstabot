@@ -565,8 +565,9 @@ WEBAPP_HTML = """<!doctype html>
     tg?.ready();
     tg?.expand();
 
+    const htmlEscapes = {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"};
     function escapeHtml(value) {
-      return String(value || "").replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch]));
+      return String(value ?? "").replace(/[&<>"']/g, ch => htmlEscapes[ch]);
     }
     function api(path, options = {}) {
       return fetch(path, {

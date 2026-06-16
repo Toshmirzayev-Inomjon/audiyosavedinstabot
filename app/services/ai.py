@@ -114,7 +114,7 @@ class MusicGenerationService:
             raise MusicGenerationError("AI audio bo'sh qaytdi")
         suffix = MusicGenerationService._suffix_for_content_type(content_type)
         output = directory / f"ai-music{suffix}"
-        await asyncio.to_thread(output.write_bytes, body)
+        output.write_bytes(body)
         return output
 
     @staticmethod
