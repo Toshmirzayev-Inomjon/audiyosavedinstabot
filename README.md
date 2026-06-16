@@ -16,6 +16,7 @@ o'tkazadi.
 - Yuklash tarixi va katta fayllar uchun vaqtinchalik HTTPS link
 - Telegram WebApp: profil, telefon tasdiqlash, parol, profil rasmi va so'rovlar tarixi
 - Telegram admin komandasi: foydalanuvchini qidirish va AI obunani qo'lda faollashtirish
+- AI obuna faol bo'lsa matnli promptdan qisqa musiqa generatsiya qilish
 
 YouTube'ning yangi JavaScript challenge'lari uchun Docker image ichida Deno
 runtime va `yt-dlp[default]` EJS solver o'rnatiladi.
@@ -30,7 +31,10 @@ yo'q. Foydalanuvchi botdagi `/tarif` orqali 30, 90 yoki 365 kunni tanlaydi va
 adminga murojaat qiladi. Admin karta orqali to'lovni tekshiradi va botdagi
 `/aiactivate USER_ID DAYS` komandasi bilan obunani ochadi.
 
-Hugging Face ulanishi serverning maxfiy Variables qismida saqlanadi:
+AI qo'shiq yaratish `/ai` yoki menyudagi `AI qo'shiq / Obuna` orqali ishlaydi.
+Foydalanuvchi prompt yozadi, bot Hugging Face MusicGen'dan audio oladi va MP3
+qilib yuboradi. Hugging Face ulanishi serverning maxfiy Variables qismida
+saqlanadi:
 
 ```env
 HUGGINGFACE_API_TOKEN=hf_yangi_maxfiy_token

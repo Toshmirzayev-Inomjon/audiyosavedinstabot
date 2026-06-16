@@ -106,6 +106,9 @@ async def health_handler(request: web.Request) -> web.Response:
             "ok": True,
             "ai_configured": bool(settings.huggingface_api_token),
             "ai_model": settings.huggingface_music_model,
+            "music_generation_configured": bool(
+                settings.huggingface_api_token and settings.huggingface_music_model
+            ),
             "voice_search_configured": bool(settings.huggingface_api_token),
             "asr_model": settings.huggingface_asr_model,
             "admin_configured": bool(settings.admin_ids),
@@ -179,6 +182,9 @@ async def me_handler(request: web.Request) -> web.Response:
             "ai_subscription_until": ai_until,
             "ai_configured": bool(settings.huggingface_api_token),
             "ai_model": settings.huggingface_music_model,
+            "music_generation_configured": bool(
+                settings.huggingface_api_token and settings.huggingface_music_model
+            ),
             "voice_search_configured": bool(settings.huggingface_api_token),
             "asr_model": settings.huggingface_asr_model,
             "language": language,

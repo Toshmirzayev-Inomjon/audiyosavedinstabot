@@ -6,14 +6,15 @@ TEXTS = {
             "<b>Assalomu alaykum!</b>\n\n"
             "Bot link orqali video va MP3 yuklaydi, qo'shiq nomi yoki ijrochi "
             "bo'yicha musiqa qidiradi, ovozli xabardan qo'shiq nomini aniqlaydi, "
-            "video note tayyorlaydi. AI qo'shiq tarifini /tarif orqali ko'rish mumkin."
+            "video note tayyorlaydi. AI obuna faol bo'lsa /ai orqali qo'shiq yaratadi."
         ),
         "help": (
             "<b>Yordam</b>\n\n"
             "Video uchun havola yuboring. MP3 uchun havola yoki qo'shiq nomini "
             "yozing. Ovozli xabarda qo'shiq nomini aytsangiz, bot uni matnga "
             "aylantirib qidiradi. Aylana video va oddiy videoga o'tkazish bepul. "
-            "/cancel aktiv amalni bekor qiladi. AI obuna uchun /tarif ni bosing."
+            "/ai AI qo'shiq yaratadi, /tarif AI obuna tarifini ko'rsatadi. "
+            "/cancel aktiv amalni bekor qiladi."
         ),
     },
     "ru": {

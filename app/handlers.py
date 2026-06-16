@@ -32,6 +32,7 @@ from app.keyboards import (
     main_keyboard,
     quality_keyboard,
 )
+from app.services.ai import MusicGenerationError, MusicGenerationService
 from app.services.downloader import (
     DownloadCancelled,
     DownloadService,
@@ -63,6 +64,7 @@ class MediaStates(StatesGroup):
     video_quality = State()
     video_download = State()
     mp3_download = State()
+    ai_prompt = State()
     circle = State()
     rectangle = State()
 
@@ -75,6 +77,7 @@ class Services:
     media: MediaService
     telegram: TelegramDownloadService
     jobs: JobManager
+    music_ai: MusicGenerationService
     speech: SpeechRecognitionService
     public_base_url: str | None = None
 
@@ -291,6 +294,7 @@ async def _show_error(message: Message, exc: Exception) -> None:
         exc,
         (
             MediaDownloadError,
+            MusicGenerationError,
             MediaConversionError,
             TelegramDownloadError,
             SpeechRecognitionError,
@@ -472,6 +476,103 @@ def build_router(services: Services) -> Router:
         finally:
             await _delete_status(status)
 
+    async def _process_ai_music_request(
+        message: Message,
+        state: FSMContext,
+        bot: Bot,
+    ) -> None:
+        await ensure_user(message, database)
+        if not message.from_user:
+            return
+        user_id = message.from_user.id
+        until = await database.ai_subscription_until(user_id)
+        if not until:
+            await state.clear()
+            await message.answer(
+                "AI qo'shiq yaratish uchun faol obuna kerak.\n"
+                "Tariflarni ko'rish uchun /tarif ni bosing.",
+                reply_markup=main_keyboard(),
+            )
+            return
+        if not message.text or message.text.startswith("/"):
+            await message.answer(
+                "AI qo'shiq uchun matnli tavsif yuboring.\n\n"
+                "Masalan: <code>quvnoq uzbekcha pop qo'shiq, dutor va zamonaviy beat</code>",
+                reply_markup=cancel_keyboard(),
+            )
+            return
+
+        prompt = message.text.strip()
+        download_id = await database.create_download(
+            user_id,
+            source_url=prompt,
+            media_type="ai_audio",
+            quality="musicgen",
+        )
+        status = await message.answer("🎼 AI qo'shiq yaratilmoqda...\n/cancel - bekor qilish")
+        try:
+            async def work(context: JobContext) -> tuple[Message, str]:
+                with tempfile.TemporaryDirectory(prefix="ai-music-", dir=settings.temp_dir) as temp:
+                    temp_dir = Path(temp)
+                    generated = await services.music_ai.generate(prompt, temp_dir)
+                    context.check_cancelled()
+                    await _update_status(status, "⚙️ AI audio MP3 formatiga o'tkazilmoqda...")
+                    output = await services.media.to_mp3(
+                        generated,
+                        temp_dir / "ai-song.mp3",
+                        cancel_event=context.cancel_event,
+                    )
+                    context.check_cancelled()
+                    await _check_output(output, settings)
+                    title = "AI qo'shiq"
+                    if output.stat().st_size > settings.telegram_upload_bytes:
+                        link = await _temporary_download_link(
+                            output,
+                            user_id=user_id,
+                            services=services,
+                        )
+                        sent = await message.answer(
+                            "✅ AI qo'shiq tayyor, lekin Telegram limitidan katta.\n\n"
+                            f"Yuklab olish: {link}",
+                            reply_markup=main_keyboard(),
+                        )
+                    else:
+                        await bot.send_chat_action(message.chat.id, ChatAction.UPLOAD_VOICE)
+                        sent = await message.answer_audio(
+                            FSInputFile(output),
+                            title=title,
+                            caption=f"✅ AI qo'shiq tayyor.\n\nPrompt: {prompt[:500]}",
+                            reply_markup=main_keyboard(),
+                        )
+                    return sent, title
+
+            sent, title = await services.jobs.run(
+                user_id,
+                work,
+                queued=lambda position: _update_status(
+                    status,
+                    f"⏳ Navbatdagi o'rningiz: {position}\n/cancel - bekor qilish",
+                ),
+            )
+            file_id = sent.audio.file_id if sent.audio else None
+            await database.finish_download(
+                download_id,
+                status="completed",
+                telegram_file_id=file_id,
+                title=title,
+            )
+            await state.clear()
+        except (DownloadCancelled, JobCancelled) as exc:
+            await database.finish_download(download_id, status="cancelled", error_message=str(exc))
+            await state.clear()
+            await message.answer("AI qo'shiq yaratish bekor qilindi.", reply_markup=main_keyboard())
+        except Exception as exc:
+            await database.finish_download(download_id, status="failed", error_message=str(exc))
+            await database.log_error("ai_music", str(exc), user_id)
+            await _show_error(message, exc)
+        finally:
+            await _delete_status(status)
+
     async def _process_video_request(
         message: Message,
         state: FSMContext,
@@ -591,9 +692,8 @@ def build_router(services: Services) -> Router:
         )
         await message.answer(i18n_text(language, "help"), reply_markup=main_keyboard(language))
 
-    @router.message(Command("ai", "tarif"))
-    @router.message(F.text.in_(AI_MUSIC_LABELS))
-    async def ai_handler(message: Message) -> None:
+    @router.message(Command("tarif"))
+    async def tariff_handler(message: Message) -> None:
         await ensure_user(message, database)
         if not message.from_user:
             return
@@ -608,9 +708,9 @@ def build_router(services: Services) -> Router:
         if until:
             await message.answer(
                 "🎼 <b>AI qo'shiq obunangiz faol</b>\n\n"
-                "Tarif: 30 kunlik AI obuna\n"
-                f"AI modeli ulangan: <code>{settings.huggingface_music_model}</code>\n"
-                "Holat: matndan qo'shiq yaratish generatori tayyorlanmoqda.",
+                "AI qo'shiq yaratish uchun /ai ni bosing yoki menyudan "
+                "<b>AI qo'shiq / Obuna</b> tugmasini tanlang.\n"
+                f"Model: <code>{settings.huggingface_music_model}</code>",
                 reply_markup=main_keyboard(),
             )
             return
@@ -628,6 +728,32 @@ def build_router(services: Services) -> Router:
             "Tarif muddatini tanlang:",
             reply_markup=ai_tariff_keyboard(settings.admin_ids),
         )
+
+    @router.message(Command("ai"))
+    @router.message(F.text.in_(AI_MUSIC_LABELS))
+    async def ai_handler(message: Message, state: FSMContext) -> None:
+        await ensure_user(message, database)
+        if not message.from_user:
+            return
+        if not settings.huggingface_api_token:
+            await message.answer(
+                "🎼 AI musiqa serveri hali ulanmagan.\n\n"
+                "Admin Railway Variables ichiga HUGGINGFACE_API_TOKEN yozishi kerak.",
+                reply_markup=main_keyboard(),
+            )
+            return
+        until = await database.ai_subscription_until(message.from_user.id)
+        if until:
+            await state.set_state(MediaStates.ai_prompt)
+            await message.answer(
+                "🎼 <b>AI qo'shiq obunangiz faol</b>\n\n"
+                "Endi qanday qo'shiq kerakligini yozing.\n\n"
+                "Masalan: <code>romantik uzbekcha pop, piano, yumshoq vokal, 90 bpm</code>\n\n"
+                f"Model: <code>{settings.huggingface_music_model}</code>",
+                reply_markup=cancel_keyboard(),
+            )
+            return
+        await tariff_handler(message)
 
     @router.callback_query(F.data.startswith("ai_plan:"))
     async def ai_plan_callback(callback: CallbackQuery) -> None:
@@ -903,6 +1029,10 @@ def build_router(services: Services) -> Router:
         bot: Bot,
     ) -> None:
         await _process_mp3_request(message, state, bot)
+
+    @router.message(MediaStates.ai_prompt)
+    async def ai_prompt_handler(message: Message, state: FSMContext, bot: Bot) -> None:
+        await _process_ai_music_request(message, state, bot)
 
     @router.message(MediaStates.circle)
     async def circle_handler(message: Message, state: FSMContext, bot: Bot) -> None:
