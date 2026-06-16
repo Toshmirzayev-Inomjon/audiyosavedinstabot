@@ -3,8 +3,26 @@ from __future__ import annotations
 import sqlite3
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+
+def _timestamp_text(timestamp: float | None = None) -> str:
+    value = datetime.fromtimestamp(timestamp or time.time(), tz=UTC)
+    return value.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _is_recent_timestamp(value: str, *, seconds: int) -> bool:
+    if not value:
+        return False
+    raw = value.split(".", maxsplit=1)[0].replace("T", " ").replace("Z", "")
+    try:
+        parsed = datetime.strptime(raw[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+    except ValueError:
+        return False
+    return time.time() - parsed.timestamp() <= seconds
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -85,6 +103,13 @@ CREATE TABLE IF NOT EXISTS ai_subscriptions (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(user_id)
+);
+
+CREATE TABLE IF NOT EXISTS admin_users (
+    user_id INTEGER PRIMARY KEY,
+    created_by INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (created_by) REFERENCES users(user_id)
 );
 """
 
@@ -235,6 +260,67 @@ class Database:
                 """,
                 (user_id, username, full_name),
             )
+
+    async def ensure_admins(self, admin_ids: frozenset[int]) -> None:
+        for admin_id in admin_ids:
+            await self.ensure_user(admin_id)
+            with self._connect() as db:
+                db.execute(
+                    """
+                    INSERT INTO admin_users (user_id, created_by)
+                    VALUES (?, ?)
+                    ON CONFLICT(user_id) DO NOTHING
+                    """,
+                    (admin_id, admin_id),
+                )
+
+    async def is_admin(
+        self,
+        user_id: int,
+        fallback_admin_ids: frozenset[int] = frozenset(),
+    ) -> bool:
+        if user_id in fallback_admin_ids:
+            return True
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT 1 FROM admin_users WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            return bool(row)
+
+    async def add_admin(self, user_id: int, *, created_by: int) -> None:
+        await self.ensure_user(user_id)
+        await self.ensure_user(created_by)
+        with self._connect() as db:
+            db.execute(
+                """
+                INSERT INTO admin_users (user_id, created_by)
+                VALUES (?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET created_by = excluded.created_by
+                """,
+                (user_id, created_by),
+            )
+
+    async def admin_list_admins(self) -> list[dict[str, Any]]:
+        with self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT a.user_id, u.username, u.full_name, a.created_by, a.created_at
+                FROM admin_users a
+                LEFT JOIN users u ON u.user_id = a.user_id
+                ORDER BY a.created_at DESC
+                """
+            ).fetchall()
+            return [
+                {
+                    "user_id": int(row[0]),
+                    "username": str(row[1] or ""),
+                    "full_name": str(row[2] or ""),
+                    "created_by": int(row[3]) if row[3] else None,
+                    "created_at": str(row[4]),
+                }
+                for row in rows
+            ]
 
     async def get_profile(self, user_id: int) -> Profile | None:
         with self._connect() as db:
@@ -616,19 +702,25 @@ class Database:
             rows = db.execute(
                 """
                 SELECT u.user_id, u.username, u.full_name, u.language, u.created_at,
-                       p.first_name, p.last_name, p.phone, a.expires_at
+                       p.first_name, p.last_name, p.phone, a.expires_at,
+                       u.updated_at,
+                       COUNT(d.id) AS download_count,
+                       MAX(d.created_at) AS last_download_at
                 FROM users u
                 LEFT JOIN profiles p ON p.user_id = u.user_id
                 LEFT JOIN ai_subscriptions a
                     ON a.user_id = u.user_id
                     AND a.status = 'active'
                     AND a.expires_at > ?
+                LEFT JOIN downloads d ON d.user_id = u.user_id
                 WHERE u.user_id = ?
                    OR LOWER(COALESCE(u.username, '')) LIKE ?
                    OR LOWER(COALESCE(u.full_name, '')) LIKE ?
                    OR LOWER(COALESCE(p.first_name, '') || ' ' ||
                             COALESCE(p.last_name, '')) LIKE ?
                    OR COALESCE(p.phone, '') LIKE ?
+                GROUP BY u.user_id, u.username, u.full_name, u.language, u.created_at,
+                         p.first_name, p.last_name, p.phone, a.expires_at, u.updated_at
                 ORDER BY u.created_at DESC LIMIT ?
                 """,
                 (int(time.time()), numeric_id, like, like, like, f"%{value}%", limit),
@@ -637,19 +729,33 @@ class Database:
 
     async def admin_stats(self) -> dict[str, int]:
         now = int(time.time())
+        since_day = _timestamp_text(now - 24 * 60 * 60)
         with self._connect() as db:
-            queries = {
-                "users": "SELECT COUNT(*) FROM users",
-                "downloads": "SELECT COUNT(*) FROM downloads",
-                "errors": "SELECT COUNT(*) FROM error_logs",
+            queries: dict[str, tuple[str, tuple]] = {
+                "users": ("SELECT COUNT(*) FROM users", ()),
+                "new_today": (
+                    "SELECT COUNT(*) FROM users WHERE created_at >= ?",
+                    (since_day,),
+                ),
+                "active_today": (
+                    "SELECT COUNT(*) FROM users WHERE updated_at >= ?",
+                    (since_day,),
+                ),
+                "downloads": ("SELECT COUNT(*) FROM downloads", ()),
+                "ai_generations": (
+                    "SELECT COUNT(*) FROM downloads WHERE media_type = 'ai_audio'",
+                    (),
+                ),
+                "errors": ("SELECT COUNT(*) FROM error_logs", ()),
                 "ai_subscriptions": (
                     "SELECT COUNT(*) FROM ai_subscriptions "
-                    f"WHERE status = 'active' AND expires_at > {now}"
+                    "WHERE status = 'active' AND expires_at > ?",
+                    (now,),
                 ),
             }
             return {
-                key: int(db.execute(query).fetchone()[0])
-                for key, query in queries.items()
+                key: int(db.execute(query, params).fetchone()[0])
+                for key, (query, params) in queries.items()
             }
 
     async def admin_users(self, limit: int = 100) -> list[dict[str, Any]]:
@@ -657,13 +763,19 @@ class Database:
             rows = db.execute(
                 """
                 SELECT u.user_id, u.username, u.full_name, u.language, u.created_at,
-                       p.first_name, p.last_name, p.phone, a.expires_at
+                       p.first_name, p.last_name, p.phone, a.expires_at,
+                       u.updated_at,
+                       COUNT(d.id) AS download_count,
+                       MAX(d.created_at) AS last_download_at
                 FROM users u
                 LEFT JOIN profiles p ON p.user_id = u.user_id
                 LEFT JOIN ai_subscriptions a
                     ON a.user_id = u.user_id
                     AND a.status = 'active'
                     AND a.expires_at > ?
+                LEFT JOIN downloads d ON d.user_id = u.user_id
+                GROUP BY u.user_id, u.username, u.full_name, u.language, u.created_at,
+                         p.first_name, p.last_name, p.phone, a.expires_at, u.updated_at
                 ORDER BY u.created_at DESC LIMIT ?
                 """,
                 (int(time.time()), limit),
@@ -682,6 +794,10 @@ class Database:
             "last_name": str(row[6] or ""),
             "phone": str(row[7] or ""),
             "ai_subscription_until": int(row[8]) if row[8] else None,
+            "last_seen_at": str(row[9] or ""),
+            "online": _is_recent_timestamp(str(row[9] or ""), seconds=5 * 60),
+            "download_count": int(row[10] or 0) if len(row) > 10 else 0,
+            "last_download_at": str(row[11] or "") if len(row) > 11 else "",
         }
 
     async def admin_errors(self, limit: int = 100) -> list[dict[str, Any]]:

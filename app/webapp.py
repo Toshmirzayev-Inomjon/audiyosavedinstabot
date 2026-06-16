@@ -82,6 +82,15 @@ def _auth_user(request: web.Request) -> dict:
         raise web.HTTPUnauthorized(text=str(exc)) from exc
 
 
+async def _auth_admin(request: web.Request) -> dict:
+    user = _auth_user(request)
+    settings: Settings = request.app["settings"]
+    database: Database = request.app["database"]
+    if not await database.is_admin(int(user["id"]), settings.admin_ids):
+        raise web.HTTPForbidden(text="Bu bo'lim faqat admin uchun")
+    return user
+
+
 def _serialize_profile(profile) -> dict | None:
     if not profile:
         return None
@@ -158,6 +167,7 @@ async def me_handler(request: web.Request) -> web.Response:
     language = await database.get_language(user_id)
     settings: Settings = request.app["settings"]
     ai_until = await database.ai_subscription_until(user_id)
+    is_admin = await database.is_admin(user_id, settings.admin_ids)
     return web.json_response(
         {
             "telegram_user": {
@@ -188,9 +198,69 @@ async def me_handler(request: web.Request) -> web.Response:
             "voice_search_configured": bool(settings.huggingface_api_token),
             "asr_model": settings.huggingface_asr_model,
             "language": language,
+            "is_admin": is_admin,
             "bot_username": request.app["bot_username"],
         }
     )
+
+
+async def admin_summary_handler(request: web.Request) -> web.Response:
+    await _auth_admin(request)
+    database: Database = request.app["database"]
+    return web.json_response(
+        {
+            "stats": await database.admin_stats(),
+            "users": await database.admin_users(limit=30),
+            "errors": await database.admin_errors(limit=20),
+            "admins": await database.admin_list_admins(),
+        }
+    )
+
+
+async def admin_users_handler(request: web.Request) -> web.Response:
+    await _auth_admin(request)
+    database: Database = request.app["database"]
+    query = request.query.get("q", "").strip()
+    users = (
+        await database.admin_search_users(query, limit=50)
+        if query
+        else await database.admin_users(limit=50)
+    )
+    return web.json_response({"users": users})
+
+
+async def admin_activate_ai_handler(request: web.Request) -> web.Response:
+    admin = await _auth_admin(request)
+    data = await _json_body(request)
+    try:
+        user_id = int(data.get("user_id", 0))
+        days = int(data.get("days", 0))
+    except (TypeError, ValueError) as exc:
+        raise web.HTTPBadRequest(text="USER_ID va DAYS son bo'lishi kerak") from exc
+    if days not in {30, 90, 365}:
+        raise web.HTTPBadRequest(text="Muddat faqat 30, 90 yoki 365 kun")
+    database: Database = request.app["database"]
+    expires_at = await database.activate_ai_subscription(
+        user_id,
+        days=days,
+        admin_id=int(admin["id"]),
+        note=str(data.get("note", "WebApp admin activation")),
+    )
+    return web.json_response({"ok": True, "user_id": user_id, "expires_at": expires_at})
+
+
+async def admin_add_admin_handler(request: web.Request) -> web.Response:
+    admin = await _auth_admin(request)
+    data = await _json_body(request)
+    try:
+        user_id = int(data.get("user_id", 0))
+    except (TypeError, ValueError) as exc:
+        raise web.HTTPBadRequest(text="Admin USER_ID son bo'lishi kerak") from exc
+    if user_id <= 0:
+        raise web.HTTPBadRequest(text="Admin USER_ID noto'g'ri")
+    database: Database = request.app["database"]
+    await database.add_admin(user_id, created_by=int(admin["id"]))
+    return web.json_response({"ok": True, "admins": await database.admin_list_admins()})
 
 
 async def set_language_handler(request: web.Request) -> web.Response:
@@ -214,8 +284,8 @@ async def save_profile_handler(request: web.Request) -> web.Response:
     phone = str(data.get("phone", "")).strip()
     password = str(data.get("password", ""))
     avatar_data = str(data.get("avatar_data", "")).strip()
-    if not first_name or not last_name:
-        raise web.HTTPBadRequest(text="Ism va familiya majburiy")
+    if not first_name:
+        raise web.HTTPBadRequest(text="Ism majburiy")
     if phone and not phone.startswith("+"):
         raise web.HTTPBadRequest(text="Telefon +998... formatida bo'lishi kerak")
     if avatar_data and (
@@ -309,6 +379,10 @@ async def start_web_app(
             web.get("/health", health_handler),
             web.get("/files/{token}", public_file_handler),
             web.get("/api/me", me_handler),
+            web.get("/api/admin/summary", admin_summary_handler),
+            web.get("/api/admin/users", admin_users_handler),
+            web.post("/api/admin/activate-ai", admin_activate_ai_handler),
+            web.post("/api/admin/add-admin", admin_add_admin_handler),
             web.post("/api/language", set_language_handler),
             web.post("/api/profile", save_profile_handler),
             web.post("/api/phone/request-code", request_code_handler),
@@ -376,6 +450,10 @@ WEBAPP_HTML = """<!doctype html>
     .actions button { flex: 1; }
     .status { margin-top: 10px; color: #8df0b2; font-size: 12px; line-height: 1.45; }
     .status.err { color: #ff8991; }
+    .hidden { display: none !important; }
+    .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 9px; margin-top: 12px; }
+    .stat { padding: 12px; border: 1px solid var(--border); border-radius: 16px; background: rgba(148,163,184,.09); }
+    .stat strong { display: block; font-size: 20px; }
     .list { display: grid; gap: 9px; margin-top: 12px; }
     .item { display: flex; justify-content: space-between; gap: 12px; padding: 13px; border: 1px solid var(--border); border-radius: 16px; background: rgba(42,171,238,.07); }
     .item strong { display: block; font-size: 13px; word-break: break-word; }
@@ -429,7 +507,7 @@ WEBAPP_HTML = """<!doctype html>
       <div class="status" id="profile_status">Yuklanmoqda...</div>
     </section>
 
-    <section class="card">
+    <section class="card hidden" id="history_card">
       <h2>So'rovlarim</h2>
       <p class="muted">Bot orqali yuborgan video/MP3 yuklashlaringiz.</p>
       <div class="list" id="download_history"></div>
@@ -445,6 +523,36 @@ WEBAPP_HTML = """<!doctype html>
         </article>
       </div>
       <p class="muted">Obuna olish uchun botda “AI qo'shiq / Obuna” tugmasini yoki /tarif komandasini bosing.</p>
+    </section>
+
+    <section class="card hidden" id="admin_panel">
+      <h2>Admin panel</h2>
+      <p class="muted">Foydalanuvchilar, obunalar, xatolar va adminlar.</p>
+      <div class="stats" id="admin_stats"></div>
+
+      <h3 style="margin-top:16px">User qidirish</h3>
+      <div class="row">
+        <input id="admin_query" placeholder="ID, username, ism yoki telefon" />
+        <button class="secondary" onclick="searchAdminUsers()">Qidirish</button>
+      </div>
+      <div class="list" id="admin_users"></div>
+
+      <h3 style="margin-top:16px">AI obuna berish</h3>
+      <div class="grid">
+        <div><label>User ID</label><input id="activate_user_id" inputmode="numeric" /></div>
+        <div><label>Muddat</label><select id="activate_days"><option>30</option><option>90</option><option>365</option></select></div>
+      </div>
+      <button style="margin-top:10px;width:100%" onclick="activateAi()">AI obunani faollashtirish</button>
+
+      <h3 style="margin-top:16px">Admin qo'shish</h3>
+      <div class="row">
+        <input id="new_admin_id" placeholder="Telegram user ID" inputmode="numeric" />
+        <button class="secondary" onclick="addAdmin()">Qo'shish</button>
+      </div>
+      <div class="list" id="admin_list"></div>
+
+      <h3 style="margin-top:16px">Oxirgi xatolar</h3>
+      <div class="list" id="admin_errors"></div>
     </section>
 
   </main>
@@ -523,7 +631,12 @@ WEBAPP_HTML = """<!doctype html>
         document.getElementById("ai_plan_model").textContent = data.ai_configured ? `AI model: ${data.ai_model}` : "AI server ulanmagan";
         setAvatar(avatarData, first, last);
         showStatus(p.phone_verified ? "Telefon tasdiqlangan." : "Telefon hali tasdiqlanmagan.", !!p.phone_verified);
-        renderHistory(data.downloads || []);
+        if (data.is_admin) {
+          document.getElementById("admin_panel").classList.remove("hidden");
+          document.getElementById("history_card").classList.remove("hidden");
+          renderHistory(data.downloads || []);
+          await loadAdmin();
+        }
       } catch (error) {
         showStatus(error.message, false);
         toast(error.message, false);
@@ -538,6 +651,101 @@ WEBAPP_HTML = """<!doctype html>
           <div><strong>${escapeHtml(item.title || item.source_url || "Media")}</strong><span>${escapeHtml(item.media_type)} · ${escapeHtml(item.quality)} · ${escapeHtml(item.status)}</span></div>
           <span>${escapeHtml(item.created_at)}</span>
         </article>`).join("");
+    }
+
+    function renderStats(stats) {
+      const labels = {
+        users: "Jami userlar",
+        new_today: "Yangi 24 soat",
+        active_today: "Aktiv 24 soat",
+        downloads: "Yuklashlar",
+        ai_generations: "AI urinishlari",
+        ai_subscriptions: "AI obunalar",
+        errors: "Xatolar"
+      };
+      document.getElementById("admin_stats").innerHTML = Object.keys(labels).map(key => `
+        <div class="stat"><strong>${escapeHtml(stats[key] ?? 0)}</strong><span class="muted">${labels[key]}</span></div>
+      `).join("");
+    }
+    function userBadge(user) {
+      if (user.online) return "🟢 online";
+      if (user.ai_subscription_until) return "💎 obunachi";
+      if ((user.download_count || 0) >= 10) return "⭐ doimiy";
+      return "⚪ user";
+    }
+    function renderAdminUsers(users) {
+      const root = document.getElementById("admin_users");
+      if (!users.length) { root.innerHTML = "<div class='muted'>User topilmadi.</div>"; return; }
+      root.innerHTML = users.map(user => `
+        <article class="item">
+          <div>
+            <strong>${escapeHtml(user.first_name || user.full_name || user.username || user.user_id)} ${escapeHtml(user.last_name || "")}</strong>
+            <span>ID: ${escapeHtml(user.user_id)} · ${escapeHtml(user.username ? "@" + user.username : "username yo'q")} · ${escapeHtml(user.phone || "tel yo'q")}</span>
+            <span>${userBadge(user)} · yuklash: ${escapeHtml(user.download_count || 0)} · AI: ${user.ai_subscription_until ? dateText(user.ai_subscription_until) : "yo'q"}</span>
+          </div>
+          <button class="secondary" onclick="fillActivate(${Number(user.user_id)})">Tanlash</button>
+        </article>
+      `).join("");
+    }
+    function renderAdminErrors(errors) {
+      const root = document.getElementById("admin_errors");
+      if (!errors.length) { root.innerHTML = "<div class='muted'>Xato loglari yo'q.</div>"; return; }
+      root.innerHTML = errors.map(error => `
+        <article class="item">
+          <div><strong>${escapeHtml(error.context)} · ${escapeHtml(error.user_id || "")}</strong><span>${escapeHtml(error.message)}</span></div>
+          <span>${escapeHtml(error.created_at)}</span>
+        </article>
+      `).join("");
+    }
+    function renderAdmins(admins) {
+      const root = document.getElementById("admin_list");
+      if (!admins.length) { root.innerHTML = "<div class='muted'>Adminlar ro'yxati bo'sh.</div>"; return; }
+      root.innerHTML = admins.map(admin => `
+        <article class="item">
+          <div><strong>${escapeHtml(admin.full_name || admin.username || admin.user_id)}</strong><span>ID: ${escapeHtml(admin.user_id)} · qo'shgan: ${escapeHtml(admin.created_by || "")}</span></div>
+          <span>${escapeHtml(admin.created_at)}</span>
+        </article>
+      `).join("");
+    }
+    async function loadAdmin() {
+      try {
+        const data = await api("/api/admin/summary");
+        renderStats(data.stats || {});
+        renderAdminUsers(data.users || []);
+        renderAdminErrors(data.errors || []);
+        renderAdmins(data.admins || []);
+      } catch (error) { toast(error.message, false); }
+    }
+    async function searchAdminUsers() {
+      try {
+        const q = encodeURIComponent(document.getElementById("admin_query").value);
+        const data = await api(`/api/admin/users?q=${q}`);
+        renderAdminUsers(data.users || []);
+      } catch (error) { toast(error.message, false); }
+    }
+    function fillActivate(userId) {
+      document.getElementById("activate_user_id").value = String(userId);
+      toast("User ID aktivatsiya maydoniga qo'yildi");
+    }
+    async function activateAi() {
+      try {
+        const payload = {
+          user_id: document.getElementById("activate_user_id").value,
+          days: document.getElementById("activate_days").value,
+          note: "WebApp admin"
+        };
+        await api("/api/admin/activate-ai", {method:"POST", body: JSON.stringify(payload)});
+        toast("AI obuna faollashtirildi");
+        await loadAdmin();
+      } catch (error) { toast(error.message, false); }
+    }
+    async function addAdmin() {
+      try {
+        await api("/api/admin/add-admin", {method:"POST", body: JSON.stringify({user_id: document.getElementById("new_admin_id").value})});
+        document.getElementById("new_admin_id").value = "";
+        toast("Admin qo'shildi");
+        await loadAdmin();
+      } catch (error) { toast(error.message, false); }
     }
 
     async function saveProfile() {

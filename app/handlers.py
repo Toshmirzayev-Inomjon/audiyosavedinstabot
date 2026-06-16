@@ -325,13 +325,12 @@ async def _send_video_note_or_fallback(
         )
         return True
     except TelegramBadRequest as exc:
-        if "VOICE_MESSAGES_FORBIDDEN" not in str(exc).upper():
-            raise
         await message.answer_video(
             FSInputFile(output),
             caption=(
-                "Telegram maxfiylik sozlamangiz aylana/ovozli xabarni qabul "
-                "qilmadi. Shu sababli video oddiy formatda yuborildi."
+                "Telegram bu chatda video note'ni qabul qilmadi. "
+                "Shu sababli aylana uchun tayyorlangan video oddiy formatda yuborildi.\n\n"
+                f"Sabab: {str(exc)[:250]}"
             ),
             supports_streaming=True,
             reply_markup=main_keyboard(),
@@ -363,6 +362,9 @@ def build_router(services: Services) -> Router:
     router = Router()
     settings = services.settings
     database = services.database
+
+    async def _is_admin(user_id: int) -> bool:
+        return await database.is_admin(user_id, settings.admin_ids)
 
     async def _process_mp3_request(
         message: Message,
@@ -569,7 +571,16 @@ def build_router(services: Services) -> Router:
         except Exception as exc:
             await database.finish_download(download_id, status="failed", error_message=str(exc))
             await database.log_error("ai_music", str(exc), user_id)
-            await _show_error(message, exc)
+            logger.exception("AI music generation failed", exc_info=exc)
+            if isinstance(exc, MusicGenerationError):
+                await _show_error(message, exc)
+            else:
+                await _show_error(
+                    message,
+                    MusicGenerationError(
+                        f"AI generator ichki xatosi: {type(exc).__name__}: {str(exc)[:300]}"
+                    ),
+                )
         finally:
             await _delete_status(status)
 
@@ -777,7 +788,7 @@ def build_router(services: Services) -> Router:
 
     @router.message(Command("admin"))
     async def admin_handler(message: Message) -> None:
-        if not message.from_user or message.from_user.id not in settings.admin_ids:
+        if not message.from_user or not await _is_admin(message.from_user.id):
             await message.answer("Bu komanda faqat admin uchun.")
             return
         query = _command_argument(message)
@@ -807,7 +818,7 @@ def build_router(services: Services) -> Router:
 
     @router.message(Command("aiactivate"))
     async def admin_activate_ai_handler(message: Message) -> None:
-        if not message.from_user or message.from_user.id not in settings.admin_ids:
+        if not message.from_user or not await _is_admin(message.from_user.id):
             await message.answer("Bu komanda faqat admin uchun.")
             return
         parts = _command_argument(message).split()
@@ -881,8 +892,13 @@ def build_router(services: Services) -> Router:
         await callback.answer()
 
     @router.message(F.text.in_(VIDEO_LABELS | {"Video yuklash"}))
-    async def choose_video(message: Message, state: FSMContext) -> None:
+    @router.message(Command("video"))
+    async def choose_video(message: Message, state: FSMContext, bot: Bot) -> None:
         await ensure_user(message, database)
+        argument = _command_argument(message)
+        if argument:
+            await _process_video_request(message, state, bot, quality="720", text_override=argument)
+            return
         await state.set_state(MediaStates.video_quality)
         await message.answer(
             "📥 <b>Video sifatini tanlang</b>\n\n"
@@ -938,8 +954,13 @@ def build_router(services: Services) -> Router:
         await callback.answer()
 
     @router.message(F.text.in_(MP3_LABELS | MUSIC_SEARCH_LABELS | {"MP3 yuklash"}))
-    async def choose_mp3(message: Message, state: FSMContext) -> None:
+    @router.message(Command("mp3", "music"))
+    async def choose_mp3(message: Message, state: FSMContext, bot: Bot) -> None:
         await ensure_user(message, database)
+        argument = _command_argument(message)
+        if argument:
+            await _process_mp3_request(message, state, bot, text_override=argument)
+            return
         await state.set_state(MediaStates.mp3_download)
         await message.answer(
             "🎵 <b>MP3 tayyorlash</b>\n\n"
@@ -993,6 +1014,7 @@ def build_router(services: Services) -> Router:
         await callback.answer()
 
     @router.message(F.text.in_(CIRCLE_LABELS | {"Aylana video qilish"}))
+    @router.message(Command("circle"))
     async def choose_circle(message: Message, state: FSMContext) -> None:
         await ensure_user(message, database)
         await state.set_state(MediaStates.circle)

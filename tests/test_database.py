@@ -133,6 +133,24 @@ async def test_language_and_admin_stats(tmp_path: Path) -> None:
     assert await database.get_language(10) == "ru"
     stats = await database.admin_stats()
     assert stats["users"] == 1
+    assert stats["new_today"] == 1
+    assert stats["active_today"] == 1
     assert stats["errors"] == 1
     assert (await database.admin_users())[0]["user_id"] == 10
     assert (await database.admin_errors())[0]["context"] == "download"
+
+
+@pytest.mark.asyncio
+async def test_dynamic_admins(tmp_path: Path) -> None:
+    database = Database(tmp_path / "admins.sqlite3")
+    await database.initialize()
+    await database.ensure_admins(frozenset({1}))
+
+    assert await database.is_admin(1) is True
+    assert await database.is_admin(2) is False
+
+    await database.add_admin(2, created_by=1)
+
+    assert await database.is_admin(2) is True
+    admins = await database.admin_list_admins()
+    assert {item["user_id"] for item in admins} == {1, 2}

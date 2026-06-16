@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import json
 import mimetypes
 from pathlib import Path
@@ -59,24 +60,33 @@ class MusicGenerationService:
             "options": {"wait_for_model": True},
         }
         timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            for attempt in range(3):
-                async with session.post(url, headers=headers, json=payload) as response:
-                    body = await response.read()
-                    content_type = response.headers.get("Content-Type", "")
-                    if 200 <= response.status < 300:
-                        return await self._save_response(
-                            body,
-                            directory,
-                            content_type=content_type,
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                for attempt in range(3):
+                    async with session.post(url, headers=headers, json=payload) as response:
+                        body = await response.read()
+                        content_type = response.headers.get("Content-Type", "")
+                        if 200 <= response.status < 300:
+                            return await self._save_response(
+                                body,
+                                directory,
+                                content_type=content_type,
+                            )
+                        error = self._decode_error(body)
+                        if response.status in {429, 503} and attempt < 2:
+                            await asyncio.sleep(self._retry_delay(error))
+                            continue
+                        raise MusicGenerationError(
+                            f"Hugging Face MusicGen xatosi ({response.status}): {error}"
                         )
-                    error = self._decode_error(body)
-                    if response.status in {429, 503} and attempt < 2:
-                        await asyncio.sleep(self._retry_delay(error))
-                        continue
-                    raise MusicGenerationError(
-                        f"Hugging Face MusicGen xatosi ({response.status}): {error}"
-                    )
+        except MusicGenerationError:
+            raise
+        except TimeoutError as exc:
+            raise MusicGenerationError(
+                "AI generator juda sekin javob berdi. Birozdan keyin qayta urinib ko'ring."
+            ) from exc
+        except aiohttp.ClientError as exc:
+            raise MusicGenerationError(f"AI serveriga ulanishda xato: {exc}") from exc
         raise MusicGenerationError("Hugging Face MusicGen javob bermadi")
 
     @staticmethod
@@ -127,7 +137,9 @@ class MusicGenerationService:
             for key in ("audio", "generated_audio", "data"):
                 value = data.get(key)
                 if isinstance(value, str):
-                    return base64.b64decode(value), str(data.get("mime_type") or "audio/wav")
+                    return MusicGenerationService._decode_audio_value(value), str(
+                        data.get("mime_type") or "audio/wav"
+                    )
             if isinstance(data.get("array"), list):
                 raise MusicGenerationError(
                     "AI modeli raw array qaytardi. Server audio fayl formatini qo'llamadi."
@@ -138,10 +150,18 @@ class MusicGenerationService:
                     for key in ("audio", "generated_audio", "data"):
                         value = item.get(key)
                         if isinstance(value, str):
-                            return base64.b64decode(value), str(
+                            return MusicGenerationService._decode_audio_value(value), str(
                                 item.get("mime_type") or "audio/wav"
                             )
         raise MusicGenerationError("AI javobida audio topilmadi")
+
+    @staticmethod
+    def _decode_audio_value(value: str) -> bytes:
+        raw = value.split(",", maxsplit=1)[1] if value.startswith("data:") else value
+        try:
+            return base64.b64decode(raw, validate=False)
+        except (binascii.Error, ValueError) as exc:
+            raise MusicGenerationError("AI javobidagi audio base64 formatida emas") from exc
 
     @staticmethod
     def _suffix_for_content_type(content_type: str) -> str:

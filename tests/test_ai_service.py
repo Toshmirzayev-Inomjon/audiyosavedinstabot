@@ -14,6 +14,14 @@ def test_music_prompt_validation() -> None:
         MusicGenerationService.normalize_prompt("qisqa")
 
 
+def test_decode_audio_value_accepts_data_uri() -> None:
+    encoded = base64.b64encode(b"audio-bytes").decode()
+
+    assert MusicGenerationService._decode_audio_value(f"data:audio/wav;base64,{encoded}") == (
+        b"audio-bytes"
+    )
+
+
 @pytest.mark.asyncio
 async def test_music_generation_requires_token(tmp_path) -> None:
     service = MusicGenerationService(api_token=None, model="facebook/musicgen-small")

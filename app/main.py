@@ -38,6 +38,9 @@ async def configure_bot_profile(
         [
             BotCommand(command="start", description="Botni ochish va xizmatlarni ko'rish"),
             BotCommand(command="help", description="Botdan foydalanish bo'yicha yordam"),
+            BotCommand(command="mp3", description="Qo'shiq nomi yoki linkdan MP3"),
+            BotCommand(command="video", description="Linkdan video yuklash"),
+            BotCommand(command="circle", description="Videoni aylana qilish"),
             BotCommand(command="history", description="Yuklash tarixini ko'rish"),
             BotCommand(command="ai", description="AI qo'shiq va obuna holati"),
             BotCommand(command="tarif", description="AI obuna tarifini ko'rish"),
@@ -107,6 +110,7 @@ async def run() -> None:
 
     database = Database(settings.database_url or settings.database_path)
     await database.initialize()
+    await database.ensure_admins(settings.admin_ids)
 
     telegram = TelegramDownloadService(
         api_id=settings.telegram_api_id,
