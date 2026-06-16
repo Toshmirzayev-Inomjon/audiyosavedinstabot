@@ -42,11 +42,18 @@ class EmptyMessage:
 class FakeDownloader:
     def __init__(self) -> None:
         self.url = ""
+        self.audio_url = ""
 
     async def download(self, url: str, directory: Path, **_kwargs) -> Path:
         self.url = url
         output = directory / "source.mp4"
         output.write_bytes(b"video")
+        return output
+
+    async def download_audio_or_song(self, url: str, directory: Path, **_kwargs) -> Path:
+        self.audio_url = url
+        output = directory / "source.mp3"
+        output.write_bytes(b"audio")
         return output
 
 
@@ -90,3 +97,21 @@ async def test_resolve_source_uses_text_override_for_saved_url(tmp_path: Path) -
 
     assert result.name == "source.mp4"
     assert downloader.url == "https://youtu.be/abc123"
+
+
+@pytest.mark.asyncio
+async def test_resolve_source_uses_full_song_download_for_audio_url(tmp_path: Path) -> None:
+    downloader = FakeDownloader()
+    services = SimpleNamespace(downloader=downloader, telegram=None, settings=None)
+
+    result = await _resolve_source(
+        EmptyMessage(),
+        bot=None,
+        services=services,
+        directory=tmp_path,
+        prefer_audio=True,
+        text_override="https://www.instagram.com/reel/abc123/",
+    )
+
+    assert result.name == "source.mp3"
+    assert downloader.audio_url == "https://www.instagram.com/reel/abc123/"

@@ -137,6 +137,7 @@ async def run() -> None:
         speech=SpeechRecognitionService(
             api_token=settings.huggingface_api_token,
             model=settings.huggingface_asr_model,
+            music_api_token=settings.audd_api_token,
         ),
     )
 

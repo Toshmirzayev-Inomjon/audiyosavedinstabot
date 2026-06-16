@@ -39,10 +39,6 @@ class MusicGenerationService:
             )
         directory.mkdir(parents=True, exist_ok=True)
 
-        url = (
-            "https://api-inference.huggingface.co/models/"
-            f"{quote(self.model, safe='/')}"
-        )
         headers = {
             "Authorization": f"Bearer {self.api_token}",
             "Accept": "audio/wav, audio/mpeg, audio/flac, application/json",
@@ -60,25 +56,38 @@ class MusicGenerationService:
             "options": {"wait_for_model": True},
         }
         timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
+        last_error: MusicGenerationError | None = None
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                for attempt in range(3):
-                    async with session.post(url, headers=headers, json=payload) as response:
-                        body = await response.read()
-                        content_type = response.headers.get("Content-Type", "")
-                        if 200 <= response.status < 300:
-                            return await self._save_response(
-                                body,
-                                directory,
-                                content_type=content_type,
+                for url in self._model_urls(self.model):
+                    for attempt in range(3):
+                        try:
+                            async with session.post(
+                                url,
+                                headers=headers,
+                                json=payload,
+                            ) as response:
+                                body = await response.read()
+                                content_type = response.headers.get("Content-Type", "")
+                                if 200 <= response.status < 300:
+                                    return await self._save_response(
+                                        body,
+                                        directory,
+                                        content_type=content_type,
+                                    )
+                                error = self._decode_error(body)
+                                last_error = MusicGenerationError(
+                                    f"Hugging Face MusicGen xatosi ({response.status}): {error}"
+                                )
+                                if response.status in {429, 503} and attempt < 2:
+                                    await asyncio.sleep(self._retry_delay(error))
+                                    continue
+                                break
+                        except aiohttp.ClientError as exc:
+                            last_error = MusicGenerationError(
+                                f"AI serveriga ulanishda xato ({url}): {exc}"
                             )
-                        error = self._decode_error(body)
-                        if response.status in {429, 503} and attempt < 2:
-                            await asyncio.sleep(self._retry_delay(error))
-                            continue
-                        raise MusicGenerationError(
-                            f"Hugging Face MusicGen xatosi ({response.status}): {error}"
-                        )
+                            break
         except MusicGenerationError:
             raise
         except TimeoutError as exc:
@@ -87,7 +96,17 @@ class MusicGenerationService:
             ) from exc
         except aiohttp.ClientError as exc:
             raise MusicGenerationError(f"AI serveriga ulanishda xato: {exc}") from exc
+        if last_error:
+            raise last_error
         raise MusicGenerationError("Hugging Face MusicGen javob bermadi")
+
+    @staticmethod
+    def _model_urls(model: str) -> tuple[str, str]:
+        encoded = quote(model, safe="/")
+        return (
+            f"https://router.huggingface.co/hf-inference/models/{encoded}",
+            f"https://api-inference.huggingface.co/models/{encoded}",
+        )
 
     @staticmethod
     def normalize_prompt(prompt: str) -> str:

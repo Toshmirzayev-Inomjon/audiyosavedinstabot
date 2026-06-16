@@ -83,6 +83,7 @@ class Settings:
     huggingface_api_token: str | None = None
     huggingface_music_model: str = "facebook/musicgen-small"
     huggingface_asr_model: str = "openai/whisper-large-v3-turbo"
+    audd_api_token: str | None = None
 
     @property
     def max_download_bytes(self) -> int:
@@ -152,6 +153,7 @@ class Settings:
                 "HUGGINGFACE_ASR_MODEL",
                 "openai/whisper-large-v3-turbo",
             ).strip(),
+            audd_api_token=os.getenv("AUDD_API_TOKEN", "").strip() or None,
         )
         if settings.max_download_mb <= 0 or settings.max_duration_minutes <= 0:
             raise ValueError("Media limitlari musbat bo'lishi kerak")

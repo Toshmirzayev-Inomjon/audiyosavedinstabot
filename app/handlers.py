@@ -175,6 +175,13 @@ async def _resolve_source(
         url = _validate_text_url(raw)
         if is_telegram_url(url):
             return await services.telegram.download(url, directory)
+        if prefer_audio:
+            return await services.downloader.download_audio_or_song(
+                url,
+                directory,
+                progress=progress,
+                cancel_event=cancel_event,
+            )
         return await services.downloader.download(
             url,
             directory,
@@ -212,15 +219,32 @@ async def _resolve_voice_search(
         services.settings.max_download_bytes,
         allow_audio=True,
     )
-    await _update_status(status, "🎙 Ovoz matnga aylantirilmoqda...")
-    wav_path = await services.media.to_wav(
-        voice_path,
-        directory / "voice-search.wav",
-        cancel_event=cancel_event,
-    )
-    if cancel_event and cancel_event.is_set():
-        raise JobCancelled("Amal foydalanuvchi tomonidan bekor qilindi")
-    query = await services.speech.transcribe(wav_path)
+    query = ""
+    recognition_errors: list[str] = []
+    if services.speech.music_recognition_configured:
+        await _update_status(status, "🎧 Ovozdan qo'shiq aniqlanmoqda...")
+        try:
+            query = await services.speech.identify_song(voice_path)
+        except SpeechRecognitionError as exc:
+            recognition_errors.append(str(exc))
+    if not query:
+        await _update_status(status, "🎙 Ovoz matnga aylantirilmoqda...")
+        wav_path = await services.media.to_wav(
+            voice_path,
+            directory / "voice-search.wav",
+            cancel_event=cancel_event,
+        )
+        if cancel_event and cancel_event.is_set():
+            raise JobCancelled("Amal foydalanuvchi tomonidan bekor qilindi")
+        try:
+            query = await services.speech.transcribe(wav_path)
+        except SpeechRecognitionError as exc:
+            recognition_errors.append(str(exc))
+            raise SpeechRecognitionError(
+                "Ovozdan qo'shiq nomi aniqlanmadi. "
+                "Qo'shiq nomini matn qilib yozing yoki aniqroq audio yuboring.\n"
+                + "\n".join(f"- {error}" for error in recognition_errors[-2:])
+            ) from exc
     await _update_status(
         status,
         f"🔎 Ovozdan aniqlangan matn: <b>{query}</b>\nQo'shiq qidirilmoqda...",

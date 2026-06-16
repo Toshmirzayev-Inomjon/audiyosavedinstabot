@@ -119,6 +119,7 @@ async def health_handler(request: web.Request) -> web.Response:
                 settings.huggingface_api_token and settings.huggingface_music_model
             ),
             "voice_search_configured": bool(settings.huggingface_api_token),
+            "music_recognition_configured": bool(settings.audd_api_token),
             "asr_model": settings.huggingface_asr_model,
             "admin_configured": bool(settings.admin_ids),
             "deno_available": bool(shutil.which("deno")),
@@ -196,6 +197,7 @@ async def me_handler(request: web.Request) -> web.Response:
                 settings.huggingface_api_token and settings.huggingface_music_model
             ),
             "voice_search_configured": bool(settings.huggingface_api_token),
+            "music_recognition_configured": bool(settings.audd_api_token),
             "asr_model": settings.huggingface_asr_model,
             "language": language,
             "is_admin": is_admin,
@@ -627,15 +629,18 @@ WEBAPP_HTML = """<!doctype html>
         document.getElementById("last_name").value = p.last_name || user.last_name || "";
         document.getElementById("phone").value = p.phone || "";
         document.getElementById("ai_server").textContent = data.ai_configured ? `AI server: ulangan (${data.ai_model})` : "AI server: ulanmagan";
-        document.getElementById("voice_search").textContent = data.voice_search_configured ? `Ovozli qidiruv: ulangan (${data.asr_model})` : "Ovozli qidiruv: ulanmagan";
+        const voiceModes = [];
+        if (data.music_recognition_configured) voiceModes.push("qo'shiq tanish");
+        if (data.voice_search_configured) voiceModes.push(`ASR ${data.asr_model}`);
+        document.getElementById("voice_search").textContent = voiceModes.length ? `Ovozli qidiruv: ulangan (${voiceModes.join(" + ")})` : "Ovozli qidiruv: ulanmagan";
         document.getElementById("ai_status").textContent = data.ai_subscription_until ? `AI obuna: ${dateText(data.ai_subscription_until)} gacha` : "AI obuna: faol emas";
         document.getElementById("ai_plan_model").textContent = data.ai_configured ? `AI model: ${data.ai_model}` : "AI server ulanmagan";
         setAvatar(avatarData, first, last);
         showStatus(p.phone_verified ? "Telefon tasdiqlangan." : "Telefon hali tasdiqlanmagan.", !!p.phone_verified);
+        document.getElementById("history_card").classList.remove("hidden");
+        renderHistory(data.downloads || []);
         if (data.is_admin) {
           document.getElementById("admin_panel").classList.remove("hidden");
-          document.getElementById("history_card").classList.remove("hidden");
-          renderHistory(data.downloads || []);
           await loadAdmin();
         }
       } catch (error) {

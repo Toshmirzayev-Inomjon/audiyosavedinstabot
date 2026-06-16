@@ -7,8 +7,9 @@ o'tkazadi.
 ## Asosiy imkoniyatlar
 
 - YouTube, YouTube Music, Instagram, TikTok, SoundCloud, Facebook va X/Twitter linklaridan media yuklash
-- Qo'shiq nomi yoki ijrochi nomi bilan MP3 qidirish (`yt-dlp` `ytsearch1`)
-- Voice message orqali qo'shiq nomini aytib qidirish (`Hugging Face` ASR)
+- Qo'shiq nomi yoki ijrochi nomi bilan MP3 qidirish (`yt-dlp` `ytsearch1` + SoundCloud fallback)
+- Instagram/TikTok/Facebook/X linklarida metadata bo'lsa qisqa reel audiosi o'rniga to'liq qo'shiqni qidirish
+- Voice message orqali qo'shiqni tanish (`AudD`) yoki qo'shiq nomini aytib qidirish (`Hugging Face` ASR)
 - Video sifatini tanlash: 360p, 720p, 1080p yoki MP3
 - Video/audio fayldan MP3 qilish
 - Videoni Telegram aylana video (`video_note`) qilish
@@ -40,10 +41,15 @@ saqlanadi:
 HUGGINGFACE_API_TOKEN=hf_yangi_maxfiy_token
 HUGGINGFACE_MUSIC_MODEL=facebook/musicgen-small
 HUGGINGFACE_ASR_MODEL=openai/whisper-large-v3-turbo
+AUDD_API_TOKEN=
 ```
 
 Tokenni `.env.example` yoki GitHub ichiga yozmang. Hugging Face Inference
 foydalanishi hisob krediti va provider limitlariga bog'liq.
+
+`AUDD_API_TOKEN` ixtiyoriy. U berilsa foydalanuvchi ovozli xabarda qo'shiq
+fragmentini yuborganda bot artist/title topishga urinadi. Token bo'lmasa bot
+faqat foydalanuvchi ovoz bilan aytgan qo'shiq nomini matnga aylantirib qidiradi.
 
 ## Bepul AI bo'yicha real variantlar
 
@@ -80,8 +86,10 @@ DATABASE_URL=${{Postgres.DATABASE_URL}}
 Telegram ichidagi `Open` tugmasi `WEBAPP_PUBLIC_URL` orqali ishlaydi. Railway'da
 public domain bo'lsa bot `RAILWAY_PUBLIC_DOMAIN`dan avtomatik foydalanadi.
 
-WebApp barcha foydalanuvchilarga faqat profil, tarix va AI obuna holatini
-ko'rsatadi. Admin boshqaruvi Telegram bot komandalarida ishlaydi:
+WebApp barcha foydalanuvchilarga profil, tarix va AI obuna holatini ko'rsatadi.
+Admin foydalanuvchilarda qo'shimcha admin panel ochiladi: user qidirish,
+obunani faollashtirish, admin qo'shish va oxirgi xatolarni ko'rish.
+Telegram bot komandalarida ham admin boshqaruvi bor:
 
 ```text
 /admin USER

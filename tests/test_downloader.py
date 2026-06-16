@@ -9,6 +9,7 @@ from app.services.downloader import (
     platform_for_url,
     search_queries,
     search_query,
+    song_query_from_info,
 )
 
 
@@ -61,6 +62,24 @@ def test_song_search_query_uses_yt_dlp_search() -> None:
         search_query("x")
 
 
+def test_song_query_from_social_metadata_prefers_artist_and_track() -> None:
+    info = {
+        "title": "Instagram video by user",
+        "music_info": {
+            "artist": "Saman",
+            "track": "BURGUT 2",
+        },
+    }
+
+    assert song_query_from_info(info) == "Saman BURGUT 2"
+
+
+def test_song_query_from_social_metadata_rejects_generic_audio() -> None:
+    info = {"audio_title": "Original audio", "title": "Instagram reel"}
+
+    assert song_query_from_info(info) is None
+
+
 @pytest.mark.asyncio
 async def test_song_search_falls_back_to_soundcloud(
     monkeypatch,
@@ -83,3 +102,37 @@ async def test_song_search_falls_back_to_soundcloud(
 
     assert result.name == "source.mp3"
     assert calls == ["ytsearch1:Oq libos", "scsearch1:Oq libos"]
+
+
+@pytest.mark.asyncio
+async def test_social_audio_uses_detected_full_song_query(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    service = DownloadService(max_bytes=1_000_000, max_duration_seconds=600)
+    calls: list[str] = []
+
+    async def fake_extract_info(url: str) -> dict:
+        assert url == "https://www.instagram.com/reel/abc/"
+        return {"music": {"artist": "Artist", "title": "Song"}}
+
+    async def fake_search(query: str, directory: Path, **_kwargs) -> Path:
+        calls.append(query)
+        output = directory / "full-song.mp3"
+        output.write_bytes(b"audio")
+        return output
+
+    async def fake_download(*_args, **_kwargs) -> Path:
+        raise AssertionError("short reel audio should not be downloaded")
+
+    monkeypatch.setattr(service, "extract_info", fake_extract_info)
+    monkeypatch.setattr(service, "search", fake_search)
+    monkeypatch.setattr(service, "download", fake_download)
+
+    result = await service.download_audio_or_song(
+        "https://www.instagram.com/reel/abc/",
+        tmp_path,
+    )
+
+    assert result.name == "full-song.mp3"
+    assert calls == ["Artist Song"]
